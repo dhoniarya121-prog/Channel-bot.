@@ -1,0 +1,8 @@
+# Kurigram is the maintained fork of Pyrogram (same `pyrogram` import). Original Pyrogram 2.0.106 breaks on new channel IDs.
+# After your first successful build run `pip freeze` and pin exact versions.
+kurigram
+motor>=3.3,<4
+pymongo>=4.6,<5
+aiohttp>=3.9
+python-dotenv>=1.0
+# Optional (faster crypto, needs a C compiler on build): TgCrypto
