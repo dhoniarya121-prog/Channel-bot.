@@ -80,3 +80,19 @@ Caption template placeholders: `{original_caption} {main_channel} {backup_channe
 
 ## Tests
 `python -m unittest discover -s tests -t .` (no pytest needed). Set `TEST_MONGO_URI` (and install `motor`) to run the same logic tests against a real MongoDB instead of the bundled in-memory emulator.
+
+## Caption styles, custom links, old posts (v1.1)
+* **Custom links:** Admin -> Caption Settings -> Links -> *Add custom link* (`Premium | https://t.me/name`). In templates use `{premium}` (URL)
+  or `{premium_at}` (shows `@name`, clickable in Telegram). *Auto-build quote style* creates the numbered blockquote layout from your links.
+* Re-processing a caption removes the bot's own earlier footer exactly, then strips old/duplicate promo links (a line that also has real text keeps that text).
+* **Update old posts:** Admin -> Channel Settings -> *Update old posts*: pick a channel and the newest post's link (or `from to` IDs).
+  The bot fetches posts by ID (bots cannot read channel history), edits captions/buttons at ~1 post/s and indexes the files. Needs "Edit messages".
+* **Force subscribe** now gates every message and button for non-admins (not only /start), keeps the deep-link target through the join step,
+  and fails open only when Telegram cannot answer for a channel (bot not admin there).
+
+## Daily file limit (v1.2)
+Telegram bots cannot see or count native forwards/saves inside a channel, so the limit is enforced where the bot *can*: files are
+**delivered by the bot**. Every user may receive (= save/forward) `daily_limit` files per day (default 2, resets at local midnight, IST by default);
+each verified referral adds +`referral_reward_quota` (default 2) to that daily limit permanently. Premium/unlimited users and admins are exempt.
+Re-opening a file you already received is free; share links are free to create. For the limit to mean anything, turn ON
+*Channel Settings -> Content protection* so files cannot be forwarded/saved straight from the channel.
