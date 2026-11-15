@@ -84,8 +84,11 @@ def install_stubs():
         types_mod.InlineKeyboardButton, types_mod.InlineKeyboardMarkup = InlineKeyboardButton, InlineKeyboardMarkup
         types_mod.CallbackQuery = CallbackQuery
         mod.types = types_mod
+        errs = types.ModuleType("pyrogram.errors")
+        _cls = {}
+        errs.__getattr__ = lambda name: _cls.setdefault(name, type(name, (Exception,), {}))
         sys.modules.update({"pyrogram": mod, "pyrogram.types": types_mod,
-                            "pyrogram.errors": MagicMock(name="pyrogram.errors"),
+                            "pyrogram.errors": errs,
                             "pyrogram.enums": MagicMock(name="pyrogram.enums")})
     try:
         import aiohttp  # noqa: F401

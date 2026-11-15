@@ -7,6 +7,8 @@ from datetime import timedelta
 from tests import helpers  # noqa: F401  (must come first: installs stand-ins, sets owner)
 from tests.helpers import fresh
 
+helpers.install_stubs()           # Telegram-free stand-ins so utils.delivery can be imported
+
 from database import (admins, channels, files, mongo, premium, referrals, requests, settings, sharing, users)
 from utils import broadcast, captions
 from utils.forcesub import evaluate
@@ -23,6 +25,7 @@ def media(n: int, **kw):
 class Base(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.db, self._cleanup = await fresh()
+        await settings.set("quota_mode", "total")          # classic one-time quota tests; daily mode has its own class
 
     async def asyncTearDown(self):
         await self._cleanup()
@@ -224,7 +227,7 @@ class TestReferrals(Base):
         self.assertEqual((await users.get(51))["referred_by"], 50)
         self.assertEqual((await referrals.stats(50))["pending"], 1)
         reward = await referrals.reward_on_verify(51)
-        self.assertEqual(reward, {"referrer_id": 50, "quota": 2, "days": 0})
+        self.assertEqual(reward, {"referrer_id": 50, "quota": 2, "days": 0, "mode": "total"})
         self.assertIsNone(await referrals.reward_on_verify(51))      # never twice
         doc = await users.get(50)
         self.assertEqual((doc["quota_remaining"], doc["referral_count"]), (7, 1))
@@ -515,3 +518,252 @@ class TestButtonSettingsPersist(Base):
         settings.clear_cache()
         self.assertEqual((await settings.get("channel_buttons"))[0]["text"], "Main")
         self.assertFalse(await settings.get("buttons_enabled"))
+
+
+class TestQuoteStyleCaptions(unittest.TestCase):
+    LINKS = {"backup": "https://t.me/unrated_wolfnox", "premium": "https://t.me/wolfe_noxnetwork",
+             "adult": "https://t.me/WOLFNOX_link"}
+
+    def test_screenshot_style_quote_block(self):
+        tpl = captions.build_quote_template(self.LINKS)
+        self.assertTrue(captions.validate_template(tpl, list(self.LINKS))[0])
+        out = captions.build_caption("Qala (2022)\nHindi • 1080p WEB-DL\n2.24 GB", tpl, self.LINKS)
+        self.assertIn("Qala (2022)\nHindi • 1080p WEB-DL\n2.24 GB\n\n<blockquote>", out)
+        for line in ("❶ BACKUP ➡ @unrated_wolfnox", "❷ PREMIUM ➡ @wolfe_noxnetwork", "❸ ADULT ➡ @WOLFNOX_link</blockquote>".replace("</blockquote>", "")):
+            self.assertIn(line, out)
+        self.assertTrue(out.rstrip().endswith("</blockquote>"))
+
+    def test_title_with_own_handle_keeps_title_and_is_idempotent(self):
+        tpl = captions.build_quote_template(self.LINKS)
+        out = captions.build_caption("(@wolfe_noxnetwork) Qala (2022)\nHindi • 1080p WEB-DL\n2.24 GB", tpl, self.LINKS)
+        self.assertIn("Qala (2022)", out)
+        self.assertEqual(out.count("@wolfe_noxnetwork"), 1)       # only in the quote block, not duplicated
+        again = captions.build_caption(out, tpl, self.LINKS)
+        self.assertEqual(again, out)
+
+    def test_dropped_line_never_leaves_unclosed_tags(self):
+        links = dict(self.LINKS, adult="")
+        tpl = "{original_caption}\n<blockquote>x\n{adult_at}</blockquote>"
+        out = captions.build_caption("T", tpl, links)
+        self.assertEqual(out.count("<blockquote>"), out.count("</blockquote>"))
+        self.assertEqual(captions.autoclose("<b>a<i>b"), "<b>a<i>b</i></b>")
+
+    def test_custom_link_names_and_unknown_placeholders(self):
+        self.assertEqual(captions.make_key("Premium Plan!"), "premium_plan")
+        self.assertIsNone(captions.make_key("!!!"))
+        self.assertIsNone(captions.make_key("x_at"))
+        self.assertEqual(captions.make_key("123"), "l_123")
+        ok, err = captions.validate_template("{original_caption} {nope_at}", list(self.LINKS))
+        self.assertFalse(ok)
+        out = captions.render("{original_caption}\nGone {removed_link}\nHi {adult_at}", "T", self.LINKS)
+        self.assertNotIn("removed_link", out)
+        self.assertIn("Hi @WOLFNOX_link", out)
+        self.assertEqual(captions.handle_of("https://t.me/+AbCdEf"), "t.me/+AbCdEf")
+
+    def test_promo_only_lines_removed_real_text_kept(self):
+        links = {"a": "https://t.me/mychannel"}
+        out = captions.remove_known_links("Movie Name 2024\nJoin @mychannel\n❷ PREMIUM➡ @mychannel\nWatch Movie Name @mychannel", ["https://t.me/mychannel"])
+        self.assertEqual(out, "Movie Name 2024\nWatch Movie Name")
+
+
+class TestOldPostRange(unittest.TestCase):
+    def test_parse_range(self):
+        from utils.oldposts import parse_range
+        self.assertEqual(parse_range("https://t.me/c/1234567890/900"), (1, 900))
+        self.assertEqual(parse_range("500"), (1, 500))
+        self.assertEqual(parse_range("100 900"), (100, 900))
+        for bad in ("", "abc", "900 100", "0 5", "1 999999999"):
+            self.assertIsNone(parse_range(bad), bad)
+
+
+class TestDailyLimit(Base):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await settings.set("quota_mode", "daily")
+        await settings.set("day_reset_offset_min", 0)
+
+    def at(self, days=0, hours=0):
+        from unittest import mock
+        base = utcnow().replace(hour=12, minute=0, second=0, microsecond=0)
+        return mock.patch("database.users.utcnow", lambda: base + timedelta(days=days, hours=hours))
+
+    async def test_two_files_per_day_then_blocked(self):
+        await self.new_user(300)
+        toks = await self.approved_files(4)
+        res = [await sharing.share_file(300, t) for t in toks]
+        self.assertEqual([r.ok for r in res], [True, True, False, False])
+        self.assertEqual({r.reason for r in res[2:]}, {"limit"})
+        doc = await users.get(300)
+        self.assertEqual((doc["daily_left"], doc["daily_limit_eff"], doc["quota_display"]), (0, 2, "0/2 today"))
+
+    async def test_limit_refills_next_day(self):
+        await self.new_user(301)
+        toks = await self.approved_files(6)
+        with self.at(0):
+            self.assertEqual([(await sharing.share_file(301, t)).ok for t in toks[:3]], [True, True, False])
+        with self.at(1):
+            self.assertEqual((await users.get(301))["daily_left"], 2)
+            self.assertEqual([(await sharing.share_file(301, t)).ok for t in toks[2:5]], [True, True, False])
+
+    async def test_reset_time_follows_timezone_offset(self):
+        await settings.set("day_reset_offset_min", 330)       # IST: new day starts 18:30 UTC
+        await self.new_user(302)
+        toks = await self.approved_files(5)
+        with self.at(0, hours=5):                               # 17:00 UTC = 22:30 IST
+            self.assertEqual([(await sharing.share_file(302, t)).ok for t in toks[:3]], [True, True, False])
+        with self.at(0, hours=7):                               # 19:00 UTC = 00:30 IST next day
+            self.assertTrue((await sharing.share_file(302, toks[2])).ok)
+
+    async def test_referral_raises_daily_limit_permanently(self):
+        await self.new_user(303)
+        code = await referrals.ensure_code(303)
+        toks = await self.approved_files(8)
+        with self.at(0):
+            await sharing.share_file(303, toks[0]); await sharing.share_file(303, toks[1])
+            self.assertEqual((await sharing.share_file(303, toks[2])).reason, "limit")
+            await self.new_user(304)
+            await referrals.track(304, code)
+            reward = await referrals.reward_on_verify(304)
+            self.assertEqual((reward["quota"], reward["mode"]), (2, "daily"))
+            doc = await users.get(303)
+            self.assertEqual((doc["daily_limit_eff"], doc["daily_left"], doc["bonus_limit"]), (4, 2, 2))
+            self.assertEqual([(await sharing.share_file(303, t)).ok for t in toks[2:5]], [True, True, False])
+        with self.at(1):                                        # tomorrow the base 2 + 2 bonus = 4 again
+            self.assertEqual((await users.get(303))["daily_left"], 4)
+            self.assertEqual([(await sharing.share_file(303, t)).ok for t in toks[4:8]], [True] * 4)
+            self.assertEqual((await users.get(303))["daily_left"], 0)
+
+    async def test_concurrent_requests_respect_daily_limit_even_on_rollover(self):
+        await self.new_user(305)
+        toks = await self.approved_files(30)
+        res = await asyncio.gather(*(sharing.share_file(305, t) for t in toks))
+        self.assertEqual(sum(r.ok for r in res), 2)
+        self.assertEqual(await sharing.count(305), 2)
+        with self.at(1):
+            res = await asyncio.gather(*(sharing.share_file(305, t) for t in toks))
+            self.assertEqual(sum(r.ok for r in res if r.reason == "ok"), 2)   # 2 new shares tomorrow (older ones are 'already')
+
+    async def test_premium_unlimited_and_admin_controls(self):
+        await self.new_user(306)
+        await premium.activate(306, 7, 1)
+        toks = await self.approved_files(6)
+        self.assertTrue(all([(await sharing.share_file(306, t)).ok for t in toks]))
+        await self.new_user(307)
+        t2 = await self.approved_files(5, start=50)
+        await users.set_quota(307, 3)                           # admin: custom daily limit for this user
+        self.assertEqual([(await sharing.share_file(307, t)).ok for t in t2[:4]], [True, True, True, False])
+        self.assertEqual(await users.reset_quota(307), 2)       # reset: override removed, allowance refilled
+        self.assertEqual((await users.get(307))["daily_left"], 2)
+        await users.set_unlimited(307, True)
+        self.assertTrue((await sharing.share_file(307, t2[4])).ok)
+
+    async def test_mode_default_and_banned_user(self):
+        settings.clear_cache()
+        db_default = __import__("database.settings", fromlist=["x"]).DEFAULTS
+        self.assertEqual((db_default["quota_mode"], db_default["daily_limit"], db_default["protect_content"]), ("daily", 2, False))
+        await self.new_user(308)
+        await users.ban(308, "x")
+        (t,) = await self.approved_files(1)
+        self.assertEqual((await sharing.share_file(308, t)).reason, "banned")
+
+
+class FakeClient:
+    def __init__(self, fail=False):
+        self.sent, self.fail = [], fail
+
+    async def send_cached_media(self, chat_id, file_id, **kw):
+        if self.fail:
+            from pyrogram.errors import RPCError
+            raise RPCError("boom")
+        self.sent.append((chat_id, file_id, kw))
+
+
+class TestDelivery(Base):
+    """The daily limit counts files a user RECEIVES (a copy they can save/forward)."""
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await settings.set("quota_mode", "daily")
+
+    async def test_two_files_per_day_via_delivery(self):
+        from utils import delivery
+        await self.new_user(400)
+        toks = await self.approved_files(4)
+        client = FakeClient()
+        res = [await delivery.deliver(client, await users.get(400), t) for t in toks]
+        self.assertEqual(res, ["ok", "ok", "limit", "limit"])
+        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(await delivery.deliver(client, await users.get(400), toks[0]), "ok")   # already has it: free
+        self.assertEqual(len(client.sent), 3)
+        doc = await users.get(400)
+        txt = await delivery.reason_text("en", "limit", doc)
+        self.assertIn("2", txt)
+        self.assertIn("+2", txt)
+
+    async def test_referral_adds_two_more_files(self):
+        from utils import delivery
+        await self.new_user(401)
+        code = await referrals.ensure_code(401)
+        toks = await self.approved_files(5)
+        client = FakeClient()
+        for t in toks[:2]:
+            await delivery.deliver(client, await users.get(401), t)
+        self.assertEqual(await delivery.deliver(client, await users.get(401), toks[2]), "limit")
+        await self.new_user(402)
+        await referrals.track(402, code)
+        await referrals.reward_on_verify(402)
+        res = [await delivery.deliver(client, await users.get(401), t) for t in toks[2:5]]
+        self.assertEqual(res, ["ok", "ok", "limit"])
+
+    async def test_failed_send_does_not_cost_a_file(self):
+        from utils import delivery
+        await self.new_user(403)
+        (t,) = await self.approved_files(1)
+        self.assertEqual(await delivery.deliver(FakeClient(fail=True), await users.get(403), t), "unavailable")
+        self.assertEqual((await users.get(403))["daily_left"], 2)
+        self.assertEqual(await sharing.count(403), 0)
+        self.assertEqual(await delivery.deliver(FakeClient(), await users.get(403), t), "ok")
+
+    async def test_admin_premium_banned_and_access_rules(self):
+        from utils import delivery
+        toks = await self.approved_files(5)
+        client = FakeClient()
+        await self.new_user(404)
+        self.assertTrue(all([await delivery.deliver(client, await users.get(404), t, is_admin=True) == "ok" for t in toks]))
+        self.assertEqual((await users.get(404))["daily_left"], 2)           # admins never spend the allowance
+        await self.new_user(405)
+        await premium.activate(405, 7, 1)
+        self.assertTrue(all([await delivery.deliver(client, await users.get(405), t) == "ok" for t in toks]))
+        await self.new_user(406)
+        await users.ban(406, "x")
+        self.assertEqual(await delivery.deliver(client, await users.get(406), toks[0]), "banned")
+        await files.set_visibility(toks[1], "premium")
+        await self.new_user(407)
+        self.assertEqual(await delivery.deliver(client, await users.get(407), toks[1]), "premium_only")
+        pending, _ = await files.submit(407, media(90))
+        self.assertEqual(await delivery.deliver(client, await users.get(407), pending["_id"]), "pending")
+
+    async def test_protect_content_flag_and_sharing_switch(self):
+        from utils import delivery
+        await self.new_user(408)
+        toks = await self.approved_files(2)
+        client = FakeClient()
+        await delivery.deliver(client, await users.get(408), toks[0])
+        self.assertFalse(client.sent[-1][2]["protect_content"])             # default: user may save/forward (counted)
+        await settings.set("protect_content", True)
+        await delivery.deliver(client, await users.get(408), toks[1])
+        self.assertTrue(client.sent[-1][2]["protect_content"])
+        await settings.set("sharing_enabled", False)
+        t3 = (await self.approved_files(1, start=70))[0]
+        for t in (toks[0], t3):                                              # admin kill switch stops every delivery
+            self.assertEqual(await delivery.deliver(client, await users.get(408), t), "disabled")
+        self.assertEqual(await delivery.deliver(client, await users.get(408), t3, is_admin=True), "ok")
+
+    async def test_concurrent_deliveries_never_exceed_limit(self):
+        from utils import delivery
+        await self.new_user(409)
+        toks = await self.approved_files(20)
+        client = FakeClient()
+        doc = await users.get(409)
+        res = await asyncio.gather(*(delivery.deliver(client, doc, t) for t in toks))
+        self.assertEqual(res.count("ok"), 2)
+        self.assertEqual(len(client.sent), 2)
