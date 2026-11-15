@@ -47,3 +47,9 @@ async def count(user_id: int | None = None, since=None) -> int:
     if since:
         flt["ts"] = {"$gte": since}
     return await mongo.col(mongo.SHARING).count_documents(flt)
+
+
+async def undo(user_id: int, token: str, mode: str) -> None:
+    """Roll back a share that could not be delivered (Telegram error): free the reservation and refund."""
+    await mongo.col(mongo.SHARING).delete_one({"user_id": user_id, "file_token": token})
+    await users.refund_share(user_id, mode)

@@ -59,8 +59,32 @@ async def register(user_id: int, first_name: str = "", username: str | None = No
     return await get(user_id), res.upserted_id is not None
 
 
+def day_key(now, offset_min: int) -> str:
+    return (as_aware(now) + timedelta(minutes=offset_min)).date().isoformat()
+
+
+async def _limit(doc: dict) -> int:
+    if doc.get("daily_override") is not None:
+        return int(doc["daily_override"])
+    return int(await settings.get("daily_limit")) + int(doc.get("bonus_limit", 0))
+
+
+async def _decorate(doc: dict | None) -> dict | None:
+    """Adds display helpers (quota_display, daily_left, daily_limit_eff) computed from settings + clock."""
+    if not doc:
+        return doc
+    if await settings.get("quota_mode") == "daily":
+        today = day_key(utcnow(), int(await settings.get("day_reset_offset_min")))
+        limit = await _limit(doc)
+        left = doc.get("day_remaining", limit) if doc.get("day_key") == today else limit
+        doc.update(daily_limit_eff=limit, daily_left=max(0, left), quota_display=f"{max(0, left)}/{limit} today")
+    else:
+        doc["quota_display"] = str(doc.get("quota_remaining", 0))
+    return doc
+
+
 async def get(user_id: int) -> dict | None:
-    return await _c().find_one({"_id": user_id})
+    return await _decorate(await _c().find_one({"_id": user_id}))
 
 
 async def find(query: str) -> dict | None:
@@ -68,7 +92,7 @@ async def find(query: str) -> dict | None:
     if q.lstrip("-").isdigit():
         return await get(int(q))
     if re.fullmatch(r"[A-Za-z0-9_]{3,32}", q):
-        return await _c().find_one({"username_l": q.lower()})
+        return await _decorate(await _c().find_one({"username_l": q.lower()}))
     return None
 
 
@@ -134,6 +158,22 @@ async def consume_share(user_id: int) -> Consume:
         {"$inc": {"shared_total": 1}, "$set": {"last_share_at": now}})
     if r.matched_count:
         return Consume(True, "ok", "unlimited")
+    if await settings.get("quota_mode") == "daily":
+        doc = await get(user_id)
+        if not doc:
+            return Consume(False, "no_user")
+        today = day_key(now, int(await settings.get("day_reset_offset_min")))
+        # new day -> exactly one concurrent request wins this roll-over and refills the allowance
+        await _c().update_one({"_id": user_id, "day_key": {"$ne": today}},
+                              {"$set": {"day_key": today, "day_remaining": await _limit(doc)}})
+        r = await _c().update_one({**base, "day_key": today, "day_remaining": {"$gt": 0}},
+                                  {"$inc": {"day_remaining": -1, "shared_total": 1}, "$set": {"last_share_at": now}})
+        if r.matched_count:
+            return Consume(True, "ok", "daily")
+        doc = await get(user_id)
+        if doc.get("banned"):
+            return Consume(False, "banned")
+        return Consume(False, "no_permission" if not has_perm(doc, "share") else "limit")
     r = await _c().update_one(
         {**base, "quota_remaining": {"$gt": 0}},
         {"$inc": {"quota_remaining": -1, "shared_total": 1}, "$set": {"last_share_at": now}})
@@ -150,13 +190,31 @@ async def consume_share(user_id: int) -> Consume:
 
 
 async def refund_share(user_id: int, mode: str) -> None:
-    if mode == "quota":
+    if mode == "daily":
+        await _c().update_one({"_id": user_id}, {"$inc": {"day_remaining": 1, "shared_total": -1}})
+    elif mode == "quota":
         await _c().update_one({"_id": user_id}, {"$inc": {"quota_remaining": 1, "shared_total": -1}})
     elif mode == "unlimited":
         await _c().update_one({"_id": user_id}, {"$inc": {"shared_total": -1}})
 
 
+async def _today() -> str:
+    return day_key(utcnow(), int(await settings.get("day_reset_offset_min")))
+
+
+async def add_daily_bonus(user_id: int, n: int) -> None:
+    """Permanently raises the user's daily limit by n (also adds n to today's remaining allowance)."""
+    r = await _c().update_one({"_id": user_id, "day_key": await _today()},
+                              {"$inc": {"bonus_limit": n, "day_remaining": n}})
+    if not r.matched_count:
+        await _c().update_one({"_id": user_id}, {"$inc": {"bonus_limit": n}})
+
+
 async def set_quota(user_id: int, n: int) -> bool:
+    if await settings.get("quota_mode") == "daily":      # per-user daily limit override, effective immediately
+        r = await _c().update_one({"_id": user_id}, {"$set": {"daily_override": max(0, n), "day_key": await _today(),
+                                                              "day_remaining": max(0, n)}})
+        return r.matched_count == 1
     r = await _c().update_one({"_id": user_id}, {"$set": {"quota_remaining": max(0, n)}})
     return r.matched_count == 1
 
@@ -167,6 +225,15 @@ async def add_quota(user_id: int, n: int) -> bool:
 
 
 async def reset_quota(user_id: int) -> int | None:
+    if await settings.get("quota_mode") == "daily":      # refill today's allowance, drop any override
+        doc = await _c().find_one({"_id": user_id})
+        if not doc:
+            return None
+        doc.pop("daily_override", None)
+        limit = await _limit(doc)
+        await _c().update_one({"_id": user_id}, {"$unset": {"daily_override": ""},
+                                                 "$set": {"day_key": await _today(), "day_remaining": limit}})
+        return limit
     n = await settings.get("free_quota")
     r = await _c().update_one({"_id": user_id}, {"$set": {"quota_remaining": n}})
     return n if r.matched_count else None
@@ -178,6 +245,9 @@ async def set_unlimited(user_id: int, value: bool) -> bool:
 
 
 async def reset_all_free_quota() -> int:
+    if await settings.get("quota_mode") == "daily":      # forces a fresh daily allowance on next use
+        r = await _c().update_many({"unlimited": {"$ne": True}}, {"$unset": {"day_key": ""}})
+        return r.matched_count
     n = await settings.get("free_quota")
     r = await _c().update_many({"unlimited": {"$ne": True}}, {"$set": {"quota_remaining": n}})
     return r.matched_count

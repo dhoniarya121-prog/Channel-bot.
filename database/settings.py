@@ -2,13 +2,17 @@
 import copy
 
 from database import mongo
-from utils.captions import DEFAULT_TEMPLATE, MINIMAL_TEMPLATE
+from utils.captions import DEFAULT_TEMPLATE, MINIMAL_TEMPLATE, QUOTE_TEMPLATE
 
 DEFAULTS: dict = {
+    "quota_mode": "daily",            # "daily" = N files/day (+bonus per referral) | "total" = one-time pool
+    "daily_limit": 2,
+    "day_reset_offset_min": 330,      # daily reset at local midnight; 330 = IST (UTC+5:30)
+    "protect_content": False,         # True = delivered files cannot be forwarded/saved at all
     "free_quota": 5,
     "sharing_enabled": True,
     "auto_caption": True,
-    "caption_templates": {"default": DEFAULT_TEMPLATE, "minimal": MINIMAL_TEMPLATE},
+    "caption_templates": {"default": DEFAULT_TEMPLATE, "minimal": MINIMAL_TEMPLATE, "quote": QUOTE_TEMPLATE},
     "active_template": "default",
     "links": {"main_channel": "", "backup_channel": "", "movie_bot": "", "discussion_group": ""},
     "old_links": [],

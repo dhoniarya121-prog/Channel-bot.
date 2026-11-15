@@ -75,12 +75,13 @@ async def reward_on_verify(referred_id: int) -> dict | None:
         return None
     quota = int(await settings.get("referral_reward_quota") or 0)
     days = int(await settings.get("referral_reward_premium_days") or 0)
+    mode = await settings.get("quota_mode")
     if quota:
-        await users.add_quota(rid, quota)
+        await (users.add_daily_bonus(rid, quota) if mode == "daily" else users.add_quota(rid, quota))
     if days:
         await premium.activate(rid, days, None)
     await mongo.col(mongo.USERS).update_one({"_id": rid}, {"$inc": {"referral_count": 1}})
-    return {"referrer_id": rid, "quota": quota, "days": days}
+    return {"referrer_id": rid, "quota": quota, "days": days, "mode": mode}
 
 
 async def stats(user_id: int) -> dict:
