@@ -8,7 +8,7 @@ from pyrogram.errors import ChatAdminRequired, MessageNotModified, RPCError
 from database import channels, files, settings
 from keyboards.channel import channel_markup
 from utils import tg
-from utils.captions import build_caption
+from utils.captioning import compute_caption
 
 log = logging.getLogger(__name__)
 _edit_lock = asyncio.Lock()
@@ -37,10 +37,7 @@ async def on_channel_media(client, message):
         return
     new_caption = None
     if auto:
-        templates = await settings.get("caption_templates")
-        template = templates.get(await settings.get("active_template")) or next(iter(templates.values()))
-        new_caption = build_caption(original_html, template, await settings.get("links"),
-                                    await settings.get("old_links"), media.get("file_name"))
+        new_caption = await compute_caption(original_html, media.get("file_name"))
     async with _edit_lock:                       # gentle on Telegram flood limits during bulk uploads
         try:
             if new_caption is not None:          # caption + permanent URL buttons in ONE edit

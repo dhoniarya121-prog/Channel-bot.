@@ -5,7 +5,7 @@ import time
 from pyrogram import Client, StopPropagation, filters
 
 from database import admins, settings, users
-from utils import health, state
+from utils import guards, health, state
 from utils.captions import strip_tags
 from utils.i18n import t
 from utils.ratelimit import limiter
@@ -48,10 +48,16 @@ async def pre_message(client, message):
     if not message.from_user or message.from_user.is_bot:
         return
     health.mark_update()
-    _, deny, _ = await screen(message.from_user)
+    doc, deny, lang = await screen(message.from_user)
     if deny is not None:
         if deny:
             await message.reply_text(deny)
+        raise StopPropagation
+    payload = ""                                    # force-subscribe gate for EVERYTHING a user does
+    if message.text and message.text.startswith("/start"):
+        parts = message.text.split(maxsplit=1)
+        payload = parts[1][:40] if len(parts) > 1 else ""
+    if not await guards.fsub_gate(client, message, message.from_user, payload, lang):
         raise StopPropagation
 
 
@@ -67,7 +73,10 @@ async def pre_callback(client, cq):
             _TAPS.pop(k, None)
     _TAPS[key] = now + 1.2
     health.mark_update()
-    _, deny, _ = await screen(cq.from_user)
+    doc, deny, lang = await screen(cq.from_user)
     if deny is not None:
         await cq.answer(strip_tags(deny)[:190] if deny else None, show_alert=bool(deny))
+        raise StopPropagation
+    if not (cq.data or "").startswith("fs:r") and not await guards.fsub_gate(client, cq, cq.from_user, "", lang):
+        await cq.answer()
         raise StopPropagation

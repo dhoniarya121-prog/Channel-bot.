@@ -415,18 +415,44 @@ async def in_delete(client, message, ctx):
 
 
 # ------------------------------------------------------------------ sharing
-adminui.number_setting("adm_s_q", "free_quota", "Default free share quota (applies to NEW users)", 0, 1000, "adm:s", "sharing")
+adminui.number_setting("adm_s_q", "free_quota", "Starting free quota for NEW users (total mode)", 0, 1000, "adm:s", "sharing")
+adminui.number_setting("adm_s_dl", "daily_limit", "Base daily share limit per user", 0, 1000, "adm:s", "sharing")
+adminui.number_setting("adm_s_tz", "day_reset_offset_min", "Daily reset offset from UTC in minutes (IST = 330)", -720, 840, "adm:s", "sharing")
 
 
 @router.cb("adm:s", "sharing")
 async def adm_sharing(client, cq, args):
     on = await settings.get("sharing_enabled")
+    mode = await settings.get("quota_mode")
     since = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    await tg.show(cq, f"🔗 <b>Sharing Management</b>\n\nSharing: {onoff(on)}\nDefault free quota: <b>{await settings.get('free_quota')}</b>\n"
+    rule = (f"Daily limit: <b>{await settings.get('daily_limit')}</b> files/day per user, +<b>{await settings.get('referral_reward_quota')}</b> "
+            f"per verified referral (permanent). Reset offset: UTC{int(await settings.get('day_reset_offset_min')):+d} min"
+            if mode == "daily" else f"Starting free quota: <b>{await settings.get('free_quota')}</b>")
+    await tg.show(cq, f"🔗 <b>Sharing Management</b>\n\nSharing: {onoff(on)}\nMode: <b>{mode}</b>\n{rule}\n"
                       f"Shares today: <b>{await sharing.count(None, since)}</b> · total: {await sharing.count()}\n\n"
-                      "Per-user limits, resets and unlimited access are on each user's card (User Management).",
-                  kb([btn(f"🔘 Sharing: {onoff(on)}", "adm:s:tog")], [btn("✏️ Default free quota", "adm:s:q")],
-                     [btn("♻️ Reset ALL users' quota", "adm:s:ra")], [btn("📜 Recent shares", "adm:s:hist")], back()))
+                      "The limit counts files a user <b>receives</b> (a copy they can save or forward). Share links are free. "
+                      "Per-user limits, resets and unlimited access are on each user's card.",
+                  kb([btn(f"🔘 Sharing: {onoff(on)}", "adm:s:tog")],
+                     [btn(f"🔁 Mode: {mode} (tap to switch)", "adm:s:mode")],
+                     [btn("📅 Daily limit", "adm:s:dl"), btn("🕛 Reset time", "adm:s:tz")],
+                     [btn("✏️ Starting quota (total mode)", "adm:s:q")],
+                     [btn("♻️ Reset ALL users' allowance", "adm:s:ra")], [btn("📜 Recent shares", "adm:s:hist")], back()))
+
+
+@router.cb("adm:s:mode", "sharing")
+async def adm_sharing_mode(client, cq, args):
+    await settings.set("quota_mode", "total" if await settings.get("quota_mode") == "daily" else "daily")
+    await adm_sharing(client, cq, args)
+
+
+@router.cb("adm:s:dl", "sharing")
+async def adm_sharing_daily(client, cq, args):
+    await adminui.number_prompt(cq, "adm_s_dl", "Base daily share limit per user", await settings.get("daily_limit"), 0, 1000)
+
+
+@router.cb("adm:s:tz", "sharing")
+async def adm_sharing_tz(client, cq, args):
+    await adminui.number_prompt(cq, "adm_s_tz", "Daily reset offset from UTC in minutes (IST = 330)", await settings.get("day_reset_offset_min"), -720, 840)
 
 
 @router.cb("adm:s:tog", "sharing")

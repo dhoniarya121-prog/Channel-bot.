@@ -17,7 +17,8 @@ log = logging.getLogger(__name__)
 
 async def reward_text(lang: str) -> str:
     q, d = await settings.get("referral_reward_quota"), await settings.get("referral_reward_premium_days")
-    parts = ([t(lang, "ref_reward_quota", n=q)] if q else []) + ([t(lang, "ref_reward_days", n=d)] if d else [])
+    key = "ref_reward_daily" if await settings.get("quota_mode") == "daily" else "ref_reward_quota"
+    parts = ([t(lang, key, n=q)] if q else []) + ([t(lang, "ref_reward_days", n=d)] if d else [])
     return ", ".join(parts) or "—"
 
 

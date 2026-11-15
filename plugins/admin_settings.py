@@ -8,7 +8,7 @@ from database import channels, settings
 from keyboards.common import btn, kb
 from utils import adminui, guards, router, state, tg
 from utils.adminui import back, onoff
-from utils.captions import LINK_KEYS, LINK_LABELS, build_caption, validate_template, validate_url
+from utils.captions import build_caption, build_quote_template, make_key, validate_template, validate_url
 from utils.text import esc, parse_int, trunc
 
 log = logging.getLogger(__name__)
@@ -20,9 +20,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
 async def adm_captions(client, cq, args):
     on, active = await settings.get("auto_caption"), await settings.get("active_template")
     links = await settings.get("links")
-    set_n = sum(1 for k in LINK_KEYS if links.get(k))
+    set_n = sum(1 for v in links.values() if v)
     await tg.show(cq, f"✏️ <b>Caption Settings</b>\n\nAutomatic caption editing: {onoff(on)}\nActive template: <b>{esc(active)}</b>\n"
-                      f"Links configured: <b>{set_n}/{len(LINK_KEYS)}</b>\nOld links to replace: <b>{len(await settings.get('old_links'))}</b>",
+                      f"Links configured: <b>{set_n}/{len(links)}</b>\nOld links to replace: <b>{len(await settings.get('old_links'))}</b>",
                   kb([btn(f"🔘 Auto caption: {onoff(on)}", "adm:c:tog")],
                      [btn("📝 Templates", "adm:c:tpl"), btn("🔗 Links", "adm:c:links")],
                      [btn("♻️ Old links", "adm:c:old"), btn("👁 Preview", "adm:c:pv")],
@@ -40,8 +40,9 @@ async def adm_templates(client, cq, args):
     tpls, active = await settings.get("caption_templates"), await settings.get("active_template")
     rows = [[btn(("✅ " if n == active else "") + n, f"adm:c:tv:{n}")] for n in tpls]
     await tg.show(cq, "📝 <b>Caption templates</b>\n\nTap a template to view, use, edit or delete it.\n"
-                      "Placeholders: <code>{original_caption} {main_channel} {backup_channel} {movie_bot} {discussion_group}</code>",
-                  kb(*rows, [btn("➕ New template", "adm:c:tn")], back("adm:c")))
+                      "Placeholders: <code>{original_caption}</code> " + " ".join(f"<code>{{{k}}}</code>/<code>{{{k}_at}}</code>" for k in (await settings.get("links"))) +
+                      "\n<code>{name}</code> = URL, <code>{name_at}</code> = @username text.",
+                  kb(*rows, [btn("🎨 Auto-build quote style", "adm:c:tq")], [btn("➕ New template", "adm:c:tn")], back("adm:c")))
 
 
 @router.cb("adm:c:tv", "captions")
@@ -101,7 +102,7 @@ async def in_template_name(client, message, ctx):
 @router.on_input("adm_c_te", "captions")
 async def in_template_text(client, message, ctx):
     text = (message.text or "").strip()
-    ok, err = validate_template(text)
+    ok, err = validate_template(text, list((await settings.get("links")).keys()))
     if not ok:
         state.set_state(message.from_user.id, "adm_c_te", **ctx)
         await message.reply_text(f"❌ {esc(err)}\nSend a corrected version (or /cancel).")
@@ -112,21 +113,25 @@ async def in_template_text(client, message, ctx):
     await message.reply_text(f"✅ Template <b>{esc(ctx['name'])}</b> saved.", reply_markup=kb([btn("📝 Templates", "adm:c:tpl")], [btn("👁 Preview", "adm:c:pv")]))
 
 
+def _label(k: str) -> str:
+    return k.replace("_", " ").title()
+
+
 @router.cb("adm:c:links", "captions")
 async def adm_links(client, cq, args):
     links = await settings.get("links")
-    rows = [[btn(f"{LINK_LABELS[k]}: {'✅' if links.get(k) else '— not set'}", f"adm:c:ln:{k}")] for k in LINK_KEYS]
-    body = "\n".join(f"• {LINK_LABELS[k]}: {esc(links.get(k) or '—')}" for k in LINK_KEYS)
-    await tg.show(cq, f"🔗 <b>Promotional links</b>\n\n{body}\n\nA line whose link is not set is left out of captions.",
-                  kb(*rows, back("adm:c")))
+    rows = [[btn(f"{_label(k)}: {'✅' if v else '— not set'}", f"adm:c:ln:{k}"), btn("🗑", f"adm:c:lr:{k}")] for k, v in links.items()]
+    body = "\n".join(f"• {_label(k)} → {esc(v or '—')}\n   <code>{{{k}}}</code> <code>{{{k}_at}}</code>" for k, v in links.items()) or "No links yet."
+    await tg.show(cq, f"🔗 <b>Promotional links</b>\n\n{body}\n\nA template line whose link is not set is left out of captions.",
+                  kb(*rows, [btn("➕ Add custom link", "adm:c:la")], back("adm:c")))
 
 
 @router.cb("adm:c:ln", "captions")
 async def adm_link_edit(client, cq, args):
-    if args[0] not in LINK_KEYS:
+    if args[0] not in await settings.get("links"):
         return ("Unknown link.", True)
-    await adminui.ask(cq, f"adm_c_ln", f"🔗 Send the new URL for <b>{LINK_LABELS[args[0]]}</b> (https://…).\nSend <code>-</code> to clear it. "
-                                       "The previous link is added to the old-links list automatically.", key=args[0])
+    await adminui.ask(cq, "adm_c_ln", f"🔗 Send the new URL for <b>{_label(args[0])}</b> (https://…).\nSend <code>-</code> to clear it. "
+                                      "The previous link is added to the old-links list automatically.", key=args[0])
 
 
 @router.on_input("adm_c_ln", "captions")
@@ -145,6 +150,52 @@ async def in_link(client, message, ctx):
         if prev not in old:
             await settings.set("old_links", (old + [prev])[-50:])
     await message.reply_text("✅ Link updated.", reply_markup=kb([btn("🔗 Links", "adm:c:links")], [btn("👁 Preview", "adm:c:pv")]))
+
+
+@router.cb("adm:c:la", "captions")
+async def adm_link_add(client, cq, args):
+    await adminui.ask(cq, "adm_c_la", "➕ Send <code>Name | https://t.me/username</code>\nExample: <code>Premium | https://t.me/wolfe_noxnetwork</code>")
+
+
+@router.on_input("adm_c_la", "captions")
+async def in_link_add(client, message, ctx):
+    name, _, url = (message.text or "").partition("|")
+    key, url = make_key(name), url.strip()
+    links = await settings.get("links")
+    if not key or not validate_url(url) or (key not in links and len(links) >= 12):
+        state.set_state(message.from_user.id, "adm_c_la")
+        await message.reply_text("⚠️ Format: <code>Name | https://…</code> (valid name, valid URL, max 12 links). Try again or /cancel.")
+        return
+    links[key] = url
+    await settings.set("links", links)
+    await message.reply_text(f"✅ Saved <b>{_label(key)}</b> — use <code>{{{key}}}</code> (URL) or <code>{{{key}_at}}</code> (@username) in templates.",
+                             reply_markup=kb([btn("🔗 Links", "adm:c:links")], [btn("🎨 Build quote style", "adm:c:tq")]))
+
+
+@router.cb("adm:c:lr", "captions")
+async def adm_link_remove(client, cq, args):
+    links = await settings.get("links")
+    prev = links.pop(args[0], None)
+    await settings.set("links", links)
+    if prev:
+        old = await settings.get("old_links")
+        if prev not in old:
+            await settings.set("old_links", (old + [prev])[-50:])
+    await adm_links(client, cq, [])
+
+
+@router.cb("adm:c:tq", "captions")
+async def adm_quote_template(client, cq, args):
+    links = await settings.get("links")
+    keys = [k for k, v in links.items() if v] or list(links)
+    if not keys:
+        return ("Add at least one link first.", True)
+    tpls = await settings.get("caption_templates")
+    tpls["quote"] = build_quote_template(keys)
+    await settings.set("caption_templates", tpls)
+    await settings.set("active_template", "quote")
+    await adm_preview(client, cq, [])
+    return "Quote template built and activated."
 
 
 @router.cb("adm:c:old", "captions")
@@ -219,7 +270,8 @@ async def adm_channels(client, cq, args):
     body = "\n".join(f"• {esc(c['title'])} (<code>{c['chat_id']}</code>)" for c in chs) or "No channels configured."
     await tg.show(cq, f"📡 <b>Channel Settings</b>\n\nCaption editing runs for files posted in:\n{body}\n\n"
                       "The bot must be an admin with the <b>Edit messages</b> right.",
-                  kb(*rows, [btn("➕ Add channel", "adm:ch:add"), btn("🔍 Re-check permissions", "adm:ch:chk")], back()))
+                  kb(*rows, [btn("➕ Add channel", "adm:ch:add"), btn("🔍 Re-check permissions", "adm:ch:chk")],
+                     [btn("🕘 Update old posts", "adm:ch:old"), btn("🛡 Content protection", "adm:ch:pt")], back()))
 
 
 @router.cb("adm:ch:add", "channels")
@@ -267,6 +319,28 @@ async def adm_channel_check(client, cq, args):
     if len(lines) == 2:
         lines.append("No channels configured.")
     await tg.show(cq, "\n".join(lines), kb(back("adm:ch")))
+
+
+@router.cb("adm:ch:pt", "channels")
+async def adm_protect(client, cq, args):
+    """No args: list channels with their state. args = chat_id, 1|0: toggle 'restrict saving content'."""
+    if len(args) == 2:
+        try:
+            await tg.safe(client.set_chat_protected_content, int(args[0]), args[1] == "1")
+        except (AttributeError, RPCError) as e:
+            return (f"Could not change it automatically ({type(e).__name__}). Do it by hand: channel → Manage → "
+                    "Administrators/Permissions → turn on 'Restrict saving content'.", True)
+    rows = []
+    for c in await channels.list_role("source"):
+        try:
+            on = bool(getattr((await client.get_chat(c["chat_id"])), "has_protected_content", False))
+        except Exception:
+            rows.append([btn(f"❔ {trunc(c['title'], 28)} (cannot read)", f"adm:ch:pt:{c['chat_id']}:1")])
+            continue
+        rows.append([btn(f"{'🛡 ON' if on else '⚪ OFF'} · {trunc(c['title'], 26)}", f"adm:ch:pt:{c['chat_id']}:{0 if on else 1}")])
+    await tg.show(cq, "🛡 <b>Channel content protection</b>\n\nWhen ON, people cannot forward, copy or save posts from the channel. "
+                      "Tap a channel to switch. (Owner rights may be needed; otherwise use the Telegram setting by hand.)\n"
+                      "This does not stop users from reporting a channel.", kb(*rows, back("adm:ch")))
 
 
 # ============================================================ force subscribe
@@ -373,14 +447,22 @@ adminui.number_setting("adm_sec_mw", "max_warns", "Warnings before auto-ban", 1,
 @router.cb("adm:sec", "security")
 async def adm_security(client, cq, args):
     s = {k: await settings.get(k) for k in ("antispam", "rate_limit_count", "rate_limit_window", "spam_mute_seconds",
-                                            "max_warns", "require_verification")}
+                                            "max_warns", "require_verification", "protect_content")}
     await tg.show(cq, "🛡 <b>Security Settings</b>\n\n"
                       f"Anti-spam / rate limit: {onoff(s['antispam'])}\nLimit: <b>{s['rate_limit_count']}</b> actions per <b>{s['rate_limit_window']}s</b>\n"
                       f"Mute after 3 violations: <b>{s['spam_mute_seconds']}s</b>\nWarnings before auto-ban: <b>{s['max_warns']}</b>\n"
-                      f"Require verification to share/submit: {onoff(s['require_verification'])}",
+                      f"Require verification to share/submit: {onoff(s['require_verification'])}\n"
+                      f"Block forward/save of delivered files (ignores the daily limit): {onoff(s['protect_content'])}",
                   kb([btn(f"🛡 Anti-spam: {onoff(s['antispam'])}", "adm:sec:as")], [btn("⏱ Rate limit", "adm:sec:rl"), btn("🔇 Mute time", "adm:sec:ms")],
                      [btn("⚠️ Max warns", "adm:sec:mw"), btn(f"✅ Verification: {onoff(s['require_verification'])}", "adm:sec:rv")],
+                     [btn(f"🛡 Block forward/save of delivered files: {onoff(s['protect_content'])}", "adm:sec:pc")],
                      [btn("🚫 Banned users", "adm:u:banned:0")], back()))
+
+
+@router.cb("adm:sec:pc", "security")
+async def adm_sec_protect(client, cq, args):
+    await settings.toggle("protect_content")
+    await adm_security(client, cq, args)
 
 
 @router.cb("adm:sec:as", "security")

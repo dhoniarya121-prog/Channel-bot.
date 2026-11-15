@@ -70,25 +70,17 @@ async def cb_submit(client, cq, args):
 
 @router.cb("sh:get")
 async def cb_share(client, cq, args):
+    """Creating a share link is free. The daily limit applies when someone RECEIVES the file."""
     user = cq.from_user
-    token = args[0] if args else ""
     doc = await users.get(user.id)
     lang = doc.get("lang", "en")
     admin = await admins.is_admin(user.id)
-    if not await guards.fsub_gate(client, cq, user, lang=lang):
-        return
-    if not admin and await settings.get("require_verification") and not doc.get("verified"):
-        return (t(lang, "verify_need").replace("<b>", "").replace("</b>", ""), True)
-    res = await sharing.share_file(user.id, token, admin)
-    if not res.ok:
-        text = t(lang, SHARE_REASONS.get(res.reason, "share_nofile"))
+    allowed, why = files.can_access(await files.get(args[0] if args else ""), doc, admin)
+    if not allowed:
+        text = await delivery.reason_text(lang, why, doc)
         return (text.replace("<b>", "").replace("</b>", "")[:190], True)
-    link = share_link(await tg.bot_username(client), token)
-    if res.reason == "already":
-        await tg.reply(cq, t(lang, "share_already", link=link))
-    else:
-        await logs.activity(user.id, "share", token)
-        await tg.reply(cq, t(lang, "share_ok", link=link, quota=quota_text(await users.get(user.id))))
+    await logs.activity(user.id, "share_link", args[0])
+    await tg.reply(cq, t(lang, "share_ok", link=share_link(await tg.bot_username(client), args[0])))
 
 
 @router.cb("f:get")
@@ -96,12 +88,13 @@ async def cb_get_file(client, cq, args):
     user = cq.from_user
     doc = await users.get(user.id)
     lang = doc.get("lang", "en")
-    if not await guards.fsub_gate(client, cq, user, lang=lang):
-        return
     res = await delivery.deliver(client, doc, args[0] if args else "", await admins.is_admin(user.id))
-    if res != "ok":
-        text = t(lang, delivery.REASON_KEYS.get(res, "unavailable"))
-        return (text.replace("<b>", "").replace("</b>", "")[:190], True)
+    if res == "ok":
+        return
+    text = await delivery.reason_text(lang, res, doc)
+    if res == "limit":
+        await tg.reply(cq, text)
+    return (text.replace("<b>", "").replace("</b>", "")[:190], True)
 
 
 async def my_files_view(doc: dict, page: int):

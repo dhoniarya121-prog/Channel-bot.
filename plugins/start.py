@@ -39,7 +39,7 @@ async def handle_payload(client, message, doc, payload: str):
     if payload.startswith("f_") and valid_token(payload[2:]):
         res = await delivery.deliver(client, doc, payload[2:], await admins.is_admin(doc["_id"]))
         if res != "ok":
-            await message.reply_text(t(lang, delivery.REASON_KEYS.get(res, "unavailable")))
+            await message.reply_text(await delivery.reason_text(lang, res, await users.get(doc["_id"])))
         return res == "ok"
     return False
 
@@ -140,7 +140,7 @@ async def cb_verify(client, cq, args):
         if reward:
             parts = []
             if reward["quota"]:
-                parts.append(t("en", "ref_reward_quota", n=reward["quota"]))
+                parts.append(t("en", "ref_reward_daily" if reward.get("mode") == "daily" else "ref_reward_quota", n=reward["quota"]))
             if reward["days"]:
                 parts.append(t("en", "ref_reward_days", n=reward["days"]))
             rdoc = await users.get(reward["referrer_id"])

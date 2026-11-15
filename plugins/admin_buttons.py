@@ -7,13 +7,12 @@ from pyrogram.errors import MessageNotModified, RPCError
 from database import channels, files, mongo, settings
 from keyboards.channel import channel_markup
 from keyboards.common import btn, kb
-from utils import adminui, router, state, tg
+from utils import adminui, jobs, router, state, tg
 from utils.adminui import back, onoff
 from utils.buttons import MAX_BUTTONS, merge, parse_lines, parse_post_link
 from utils.text import esc, trunc
 
 log = logging.getLogger(__name__)
-_RUNNING = {"reapply": False}
 
 
 @router.cb("adm:cb", "captions")
@@ -161,13 +160,13 @@ async def adm_cb_all_ask(client, cq, args):
 
 @router.cb("adm:cb:all2", "captions")
 async def adm_cb_all(client, cq, args):
-    if _RUNNING["reapply"]:
-        return ("Already running.", True)
+    if jobs.busy():
+        return (f"Another job is running: {jobs.busy()}", True)
     markup = await channel_markup(force=True)
     if not markup:
         return ("No buttons configured.", True)
     admin_id = cq.from_user.id
-    _RUNNING["reapply"] = True
+    jobs.acquire("re-apply buttons")
     await tg.show(cq, "♻️ Started. You will get a message when it finishes.", kb(back("adm:cb")))
 
     async def job():
@@ -184,6 +183,6 @@ async def adm_cb_all(client, cq, args):
                     failed += 1
                 await asyncio.sleep(1)
         finally:
-            _RUNNING["reapply"] = False
+            jobs.release()
         await tg.notify(client, admin_id, f"♻️ Buttons re-applied.\n✅ {done}  ❌ {failed} (deleted posts or missing rights)")
     asyncio.create_task(job())
