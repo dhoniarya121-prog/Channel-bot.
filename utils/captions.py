@@ -1,18 +1,25 @@
-"""Caption building: pure functions (no Telegram dependency), fully unit-testable."""
+"""Caption building: pure functions (no Telegram dependency), fully unit-testable.
+
+Template placeholders: {original_caption}, {<link>} = URL, {<link>_at} = @username text (clickable in Telegram)
+where <link> is any configured link name (defaults: main_channel, backup_channel, movie_bot, discussion_group)."""
 import html
 import re
 from html.parser import HTMLParser
 from pathlib import PurePath
 from urllib.parse import urlparse
 
-LINK_KEYS = ("main_channel", "backup_channel", "movie_bot", "discussion_group")
-LINK_LABELS = {"main_channel": "Main Channel", "backup_channel": "Backup Channel",
-               "movie_bot": "Movie Bot", "discussion_group": "Discussion Group"}
-PLACEHOLDERS = {"original_caption", *LINK_KEYS}
+DEFAULT_LINK_KEYS = ("main_channel", "backup_channel", "movie_bot", "discussion_group")
+LINK_KEYS = DEFAULT_LINK_KEYS            # backwards compatible alias
 ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a", "code", "pre",
                 "blockquote", "tg-spoiler"}
 CAPTION_LIMIT = 1024
 _PH = re.compile(r"\{(\w+)\}")
+KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
+NUMS = "❶❷❸❹❺❻❼❽❾❿"
+PROMO_WORDS = {"join", "backup", "channel", "main", "premium", "adult", "bot", "group", "follow", "subscribe",
+               "link", "share", "support", "now", "movie", "movies", "updates", "official", "telegram", "click",
+               "here", "via", "by", "for", "more", "visit", "download", "from", "our", "my", "the", "see",
+               "check", "get", "contact", "and", "at", "on", "to", "us"}
 
 DEFAULT_TEMPLATE = (
     "🎬 {original_caption}\n\n"
@@ -25,6 +32,40 @@ MINIMAL_TEMPLATE = (
     "{original_caption}\n\n"
     '<a href="{main_channel}">Main Channel</a> | <a href="{backup_channel}">Backup</a>'
 )
+
+
+def label(key: str) -> str:
+    return key.replace("_", " ").upper()
+
+
+def build_quote_template(keys) -> str:
+    """Quote-block style: original caption, then a blockquote with numbered `NAME ➡ @username` lines."""
+    lines = ["{original_caption}", "", "<blockquote>★───────|꧁꧂|───────★"]
+    for i, k in enumerate(list(keys)[:10]):
+        lines.append("%s %s ➡ {%s_at}" % (NUMS[i], label(k), k))
+    lines.append("</blockquote>")
+    return "\n".join(lines)
+
+
+QUOTE_TEMPLATE = build_quote_template(DEFAULT_LINK_KEYS)
+
+
+def make_key(name: str) -> str | None:
+    k = re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")[:20].strip("_")
+    if not k:
+        return None
+    if not k[0].isalpha():
+        k = "l_" + k[:17]
+    if k.endswith("_at") or k == "original_caption" or not KEY_RE.match(k):
+        return None
+    return k
+
+
+def handle_of(url: str) -> str:
+    m = re.match(r"^(?:https?://)?(?:www\.)?t\.me/([A-Za-z0-9_]{4,})(?:/|\?|$)", (url or "").strip())
+    if m and m.group(1).lower() not in ("joinchat", "c", "addlist"):
+        return "@" + m.group(1)
+    return re.sub(r"^https?://(www\.)?", "", (url or "").strip())
 
 
 def u16len(s: str) -> int:
@@ -75,6 +116,18 @@ class _TagCheck(HTMLParser):
             self.stack.pop()
 
 
+def autoclose(h: str) -> str:
+    """Close any tag left open (e.g. after a template line was dropped) so Telegram accepts the markup."""
+    stack = []
+    for m in re.finditer(r"<(/?)([a-zA-Z-]+)[^>]*>", h):
+        if m.group(1):
+            if stack and stack[-1] == m.group(2).lower():
+                stack.pop()
+        else:
+            stack.append(m.group(2).lower())
+    return h + "".join(f"</{t}>" for t in reversed(stack))
+
+
 def validate_url(url: str) -> bool:
     url = (url or "").strip()
     if not url or len(url) > 300 or re.search(r"[\s\"'<>]", url):
@@ -83,24 +136,25 @@ def validate_url(url: str) -> bool:
     return p.scheme in ("http", "https") and bool(p.netloc) and "." in p.netloc
 
 
-def validate_template(text: str) -> tuple[bool, str]:
+def validate_template(text: str, keys=DEFAULT_LINK_KEYS) -> tuple[bool, str]:
     text = (text or "").strip()
     if not text:
         return False, "Template is empty."
     if "{original_caption}" not in text:
         return False, "Template must contain {original_caption} so the original caption is preserved."
-    bad = sorted(set(_PH.findall(text)) - PLACEHOLDERS)
+    allowed = {"original_caption", *keys, *(k + "_at" for k in keys)}
+    bad = sorted(set(_PH.findall(text)) - allowed)
     if bad:
         return False, "Unknown placeholder(s): " + ", ".join("{%s}" % b for b in bad)
     chk = _TagCheck()
     try:
         chk.feed(text)
         chk.close()
-    except Exception as e:  # malformed markup
+    except Exception as e:
         return False, f"HTML error: {e}"
     if chk.error or chk.stack:
         return False, chk.error or f"unclosed <{chk.stack[-1]}>"
-    sample = {k: "https://t.me/example" for k in LINK_KEYS}
+    sample = {k: "https://t.me/example" + str(i) * 2 for i, k in enumerate(keys)}
     if visible_len(render(text, "", sample)) > 500:
         return False, "Template text is too long (max ~500 visible characters)."
     return True, ""
@@ -120,34 +174,84 @@ def _variants(url: str) -> list[str]:
     return out
 
 
+_ANCHOR = re.compile(r"<a\s[^>]*href=\"([^\"]*)\"[^>]*>.*?</a>", re.I | re.S)
+_TAGS = re.compile(r"(<[^>]+>)")
+
+
+def _strip_line(line: str, pats) -> str | None:
+    """Remove known links from one line. Returns the cleaned line, or None when nothing useful is left."""
+    changed = False
+
+    def drop_anchor(m):
+        nonlocal changed
+        if any(p.search(_norm_url(html.unescape(m.group(1)))) for p in pats):
+            changed = True
+            return ""
+        return m.group(0)
+    line = _ANCHOR.sub(drop_anchor, line)
+    parts = []
+    for seg in _TAGS.split(line):
+        if seg.startswith("<"):
+            parts.append(seg)
+            continue
+        for p in pats:
+            seg, n = p.subn("", seg)
+            changed = changed or n > 0
+        parts.append(seg)
+    if not changed:
+        return line
+    rest = "".join(parts)
+    rest = re.sub(r"[\(\[\{]\s*[\)\]\}]", "", rest)
+    rest = re.sub(r"[ \t]{2,}", " ", rest).strip(" \t-–—|•:➡➜→>·")
+    words = re.findall(r"[^\W_]+", strip_tags(rest))
+    if any(w.lower() not in PROMO_WORDS and not w.isdigit() for w in words):
+        return rest
+    return None
+
+
 def remove_known_links(original_html: str, known_urls) -> str:
-    """Drop every line that contains one of the known (current or old) links."""
-    pats = []
-    for u in known_urls:
-        for v in _variants(u):
-            pats.append(re.compile(r"(?<![\w@])" + re.escape(v) + r"(?![\w])"))
+    """Strip every current/old promotional link. Lines that were only promotion disappear; a line that also
+    carries real text (e.g. a title with an @handle) keeps that text."""
+    pats = [re.compile(r"(?<![\w@])" + re.escape(v) + r"(?![\w])", re.I)
+            for u in known_urls for v in _variants(u)]
     if not pats:
         return (original_html or "").strip()
-    kept = [ln for ln in (original_html or "").split("\n")
-            if not any(p.search(ln.lower()) for p in pats)]
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
-    return text
+    kept = [r for r in (_strip_line(ln, pats) for ln in (original_html or "").split("\n")) if r is not None]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _resolve(ph: str, links: dict):
+    if ph in links:
+        return "url", ph
+    if ph.endswith("_at") and ph[:-3] in links:
+        return "at", ph[:-3]
+    return None
 
 
 def render(template: str, original_html: str, links: dict) -> str:
     seen: set[str] = set()
     out: list[str] = []
     for line in template.split("\n"):
-        keys = [k for k in _PH.findall(line) if k in LINK_KEYS]
-        has_orig = "{original_caption}" in line
-        valid = {k: (links.get(k) or "").strip() for k in keys}
+        phs = [p for p in _PH.findall(line)]
+        has_orig = "original_caption" in phs
+        refs = [_resolve(p, links) for p in phs if p != "original_caption"]
         if not has_orig:
-            if any(not validate_url(v) or _norm_url(v) in seen for v in valid.values()):
-                continue                                   # unset / invalid / duplicate link -> drop line
-            seen.update(_norm_url(v) for v in valid.values())
-        for k in keys:
-            v = valid[k] if validate_url(valid[k]) else ""
-            line = line.replace("{%s}" % k, html.escape(v, quote=True))
+            if any(r is None for r in refs):
+                continue                                    # unknown placeholder -> drop line
+            urls = [(links.get(k) or "").strip() for _, k in refs]
+            if any(not validate_url(u) or _norm_url(u) in seen for u in urls):
+                continue                                    # unset / invalid / duplicate link -> drop line
+            seen.update(_norm_url(u) for u in urls)
+        for p in set(phs):
+            if p == "original_caption":
+                continue
+            r = _resolve(p, links)
+            val = ""
+            if r:
+                u = (links.get(r[1]) or "").strip()
+                if validate_url(u):
+                    val = html.escape(u if r[0] == "url" else handle_of(u), quote=True)
+            line = line.replace("{%s}" % p, val)
         out.append(line)
     text = "\n".join(out).replace("{original_caption}", original_html)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
@@ -178,21 +282,33 @@ def _strip_prefix(cleaned: str, template: str) -> str:
     return cleaned
 
 
+def _drop_footer(h: str, footer_texts: set[str]) -> str:
+    """Remove lines that are exactly our own previously-added footer, and lines holding only leftover tags."""
+    kept = []
+    for ln in (h or "").split("\n"):
+        text = strip_tags(ln).strip()
+        if text in footer_texts or (ln.strip() and not text):
+            continue
+        kept.append(ln)
+    return "\n".join(kept)
+
+
 def build_caption(original_html: str | None, template: str, links: dict, old_links=(),
                   file_name: str | None = None, limit: int = CAPTION_LIMIT) -> str:
     known = [v for v in links.values() if v] + list(old_links or [])
-    cleaned = remove_known_links(original_html or "", known)
+    footer = {strip_tags(ln).strip() for ln in render(template, "", links).split("\n")} - {""}
+    cleaned = remove_known_links(_drop_footer(original_html or "", footer), known)
     cleaned = _strip_prefix(cleaned, template)
     if not strip_tags(cleaned).strip():
         cleaned = html.escape(fallback_title(file_name))
-    out = render(template, cleaned, links)
+    out = autoclose(render(template, cleaned, links))
     if visible_len(out) <= limit:
         return out
     room = limit - visible_len(render(template, "", links))
     plain = html.unescape(strip_tags(cleaned)).strip()
     if room >= 10:
         short = html.escape(_truncate_u16(plain, room - 1)) + "…"
-        out = render(template, short, links)
+        out = autoclose(render(template, short, links))
         if visible_len(out) <= limit:
             return out
     return html.escape(_truncate_u16(plain, limit - 1)) + "…"

@@ -6,7 +6,7 @@ from utils.text import esc, fmt_dt, time_left
 
 
 def quota_text(doc: dict) -> str:
-    return "♾️" if users.is_unlimited(doc) else str(doc.get("quota_remaining", 0))
+    return "♾️" if users.is_unlimited(doc) else doc.get("quota_display") or str(doc.get("quota_remaining", 0))
 
 
 def plan_text(doc: dict) -> str:
