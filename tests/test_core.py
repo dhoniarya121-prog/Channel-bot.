@@ -671,6 +671,10 @@ class FakeClient:
     def __init__(self, fail=False):
         self.sent, self.fail = [], fail
 
+    async def get_me(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(username="testbot")
+
     async def send_cached_media(self, chat_id, file_id, **kw):
         if self.fail:
             from pyrogram.errors import RPCError
@@ -741,6 +745,34 @@ class TestDelivery(Base):
         self.assertEqual(await delivery.deliver(client, await users.get(407), toks[1]), "premium_only")
         pending, _ = await files.submit(407, media(90))
         self.assertEqual(await delivery.deliver(client, await users.get(407), pending["_id"]), "pending")
+
+    async def test_roaroic_caption_design(self):
+        from utils import captioning
+        out = await captioning.compute_caption("Movie 2026 1080p", "Movie.mkv")
+        self.assertIn("Movie 2026 1080p", out)
+        self.assertTrue(out.startswith("<b>[ @roaroic0 ]</b> Movie 2026 1080p"))
+        self.assertEqual(out.count(captions.DIVIDER), 2)
+        for url in captions.ROAROIC_LINKS.values():
+            self.assertIn(url, out)
+        self.assertTrue(out.endswith("ROAROIC MOVIE'S || 0.1</b> 💫"))
+        self.assertLessEqual(captions.visible_len(out), 1024)
+        again = await captioning.compute_caption(out, "Movie.mkv")     # re-editing must not stack footers
+        self.assertEqual(again, out)
+
+    async def test_invite_link_under_every_file(self):
+        from utils import delivery
+        await self.new_user(420)
+        toks = await self.approved_files(2)
+        client = FakeClient()
+        for t in toks:
+            await delivery.deliver(client, await users.get(420), t)
+        code = await referrals.ensure_code(420)
+        for _, _, kw in client.sent:
+            self.assertIn(f"https://t.me/testbot?start=r_{code}", kw["caption"])
+            self.assertLessEqual(len(kw["caption"]), 1024)
+            self.assertIsNotNone(kw["reply_markup"])
+        long = delivery.build_caption("x" * 2000, "\n\nFOOT")
+        self.assertTrue(long.endswith("FOOT") and len(long) <= 1024)
 
     async def test_protect_content_flag_and_sharing_switch(self):
         from utils import delivery
