@@ -25,6 +25,9 @@ async def main() -> None:
     from utils import health, workers
 
     await mongo.connect(config.MONGO_URI, config.DB_NAME)
+    from database import settings
+    if await settings.seed_roaroic():
+        log.info("ROAROIC links + caption design installed")
     logger.db_handler.start()
     runner = await health.start_web(config.PORT)
 
