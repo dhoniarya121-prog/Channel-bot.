@@ -237,6 +237,7 @@ def _strip_line(line: str, pats) -> str | None:
         for p in pats:
             seg, n = p.subn("", seg)
             changed = changed or n > 0
+        seg = re.sub(r"https?://(?=\s|$)", "", seg)       # scheme left behind by a removed t.me link
         parts.append(seg)
     if not changed:
         return line
