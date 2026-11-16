@@ -759,6 +759,18 @@ class TestDelivery(Base):
         again = await captioning.compute_caption(out, "Movie.mkv")     # re-editing must not stack footers
         self.assertEqual(again, out)
 
+    async def test_design_seed_overrides_old_links_once(self):
+        await settings.set("links", {"main_channel": "https://t.me/roaroic0", "x": "https://t.me/old1"})
+        await settings.set("active_template", "quote")
+        self.assertTrue(await settings.seed_roaroic())
+        self.assertEqual(await settings.get("links"), captions.ROAROIC_LINKS)
+        self.assertEqual(await settings.get("active_template"), "roaroic")
+        self.assertIn("https://t.me/old1", await settings.get("old_links"))
+        self.assertFalse(await settings.seed_roaroic())              # second start: admin edits are kept
+        await settings.set("active_template", "minimal")
+        self.assertFalse(await settings.seed_roaroic())
+        self.assertEqual(await settings.get("active_template"), "minimal")
+
     async def test_invite_link_under_every_file(self):
         from utils import delivery
         await self.new_user(420)
