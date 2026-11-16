@@ -2,7 +2,7 @@
 import copy
 
 from database import mongo
-from utils.captions import DEFAULT_TEMPLATE, MINIMAL_TEMPLATE, QUOTE_TEMPLATE
+from utils.captions import DEFAULT_TEMPLATE, MINIMAL_TEMPLATE, QUOTE_TEMPLATE, ROAROIC_LINKS, ROAROIC_SIMPLE_TEMPLATE, ROAROIC_TEMPLATE
 
 DEFAULTS: dict = {
     "quota_mode": "daily",            # "daily" = N files/day (+bonus per referral) | "total" = one-time pool
@@ -12,9 +12,9 @@ DEFAULTS: dict = {
     "free_quota": 5,
     "sharing_enabled": True,
     "auto_caption": True,
-    "caption_templates": {"default": DEFAULT_TEMPLATE, "minimal": MINIMAL_TEMPLATE, "quote": QUOTE_TEMPLATE},
-    "active_template": "default",
-    "links": {"main_channel": "", "backup_channel": "", "movie_bot": "", "discussion_group": ""},
+    "caption_templates": {"roaroic": ROAROIC_TEMPLATE, "roaroic_simple": ROAROIC_SIMPLE_TEMPLATE, "default": DEFAULT_TEMPLATE, "minimal": MINIMAL_TEMPLATE, "quote": QUOTE_TEMPLATE},
+    "active_template": "roaroic",
+    "links": dict(ROAROIC_LINKS),
     "old_links": [],
     "channel_buttons": [],
     "buttons_enabled": False,
@@ -72,3 +72,17 @@ async def update_in(key: str, sub: str, value) -> None:
     cur = await get(key) or {}
     cur[sub] = value
     await set(key, cur)
+
+
+async def seed_roaroic() -> bool:
+    """One-time upgrade for an existing database: install the ROAROIC links + caption design if the admin never set any link."""
+    links = await get("links") or {}
+    if any(v for v in links.values()):
+        return False
+    templates = await get("caption_templates") or {}
+    templates["roaroic"] = ROAROIC_TEMPLATE
+    templates["roaroic_simple"] = ROAROIC_SIMPLE_TEMPLATE
+    await set("links", dict(ROAROIC_LINKS))
+    await set("caption_templates", templates)
+    await set("active_template", "roaroic")
+    return True
