@@ -1,10 +1,8 @@
-# Render Blueprint. A Telegram bot is a long-running process; the web service type is used only because
-# Render's free tier has no background workers. See README "Render limitations" before choosing a plan.
 services:
   - type: web
-    name: roaroic-auto-link-bot
+    name: roaroic-caption-bot
     runtime: python
-    plan: starter            # 'free' spins down after ~15 min without HTTP traffic -> the bot goes offline
+    plan: starter
     region: singapore
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python bot.py
@@ -13,17 +11,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: API_ID
-        sync: false
-      - key: API_HASH
-        sync: false
-      - key: BOT_TOKEN
-        sync: false
-      - key: MONGO_URI
-        sync: false
-      - key: OWNER_ID
-        sync: false
-      - key: DB_NAME
-        value: roaroic_autolink
-      - key: LOG_LEVEL
-        value: INFO
+      - {key: API_ID, sync: false}
+      - {key: API_HASH, sync: false}
+      - {key: BOT_TOKEN, sync: false}
+      - {key: OWNER_ID, sync: false}
+      - {key: SOURCE_CHANNELS, sync: false}

@@ -1,14 +1,10 @@
-"""ROAROIC AUTO LINK BOT - entry point.
-
-Architecture: Pyrogram/MTProto (Kurigram fork) bot client + Motor (async MongoDB) + tiny aiohttp health server.
-"""
+"""ROAROIC CAPTION BOT - entry point. Pyrogram (Kurigram) + tiny aiohttp health server. No database."""
 import asyncio
 import logging
-import os
 import sys
 
 import config
-from utils import lifecycle, logger
+from utils import logger
 
 log = logging.getLogger("roaroic")
 
@@ -21,45 +17,21 @@ async def main() -> None:
     logger.setup()
 
     from pyrogram import Client, enums, idle
-    from database import mongo
-    from utils import health, workers
+    from utils import health
 
-    await mongo.connect(config.MONGO_URI, config.DB_NAME)
-    from database import settings
-    if await settings.seed_roaroic():
-        log.info("ROAROIC links + caption design installed")
-    logger.db_handler.start()
     runner = await health.start_web(config.PORT)
-
     app = Client(config.SESSION_NAME, api_id=config.API_ID, api_hash=config.API_HASH,
                  bot_token=config.BOT_TOKEN, in_memory=True, plugins=dict(root="plugins"),
                  parse_mode=enums.ParseMode.HTML)
     await app.start()
     me = await app.get_me()
     log.info("%s started as @%s", config.BOT_NAME, me.username)
-
-    tasks = [asyncio.create_task(workers.premium_worker(app)),
-             asyncio.create_task(workers.backup_worker(app)),
-             asyncio.create_task(health.monitor(app))]
-    for oid in config.OWNER_IDS:
-        try:
-            await app.send_message(oid, f"✅ <b>{config.BOT_NAME}</b> v{config.VERSION} started.")
-        except Exception:
-            pass
-
     try:
-        await idle()                       # returns on SIGINT / SIGTERM (Render stop/redeploy, /restart)
+        await idle()
     finally:
-        log.info("Shutting down gracefully…")
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        log.info("Shutting down…")
         await app.stop()
         await runner.cleanup()
-        await logger.db_handler.stop()
-        await mongo.close()
-    if lifecycle.RESTART_REQUESTED:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == "__main__":
