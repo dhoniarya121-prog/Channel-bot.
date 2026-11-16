@@ -1,54 +1,46 @@
-"""Automatic caption editor for files posted in the configured source channels."""
+"""Auto caption: every new file posted in the channel gets the ROAROIC links design."""
 import asyncio
 import logging
 
 from pyrogram import Client, filters
-from pyrogram.errors import ChatAdminRequired, MessageNotModified, RPCError
+from pyrogram.errors import ChatAdminRequired, FloodWait, MessageNotModified, RPCError
 
-from database import channels, files, settings
-from keyboards.channel import channel_markup
-from utils import tg
+import config
 from utils.captioning import compute_caption
 
 log = logging.getLogger(__name__)
-_edit_lock = asyncio.Lock()
+_lock = asyncio.Lock()
 
 
 async def _is_source(_, __, message):
-    return message.chat is not None and await channels.get("source", message.chat.id) is not None
+    if message.chat is None:
+        return False
+    return not config.SOURCE_CHANNELS or message.chat.id in config.SOURCE_CHANNELS
 
 
 source_chat = filters.create(_is_source, "source_chat")
 MEDIA = filters.document | filters.video | filters.audio | filters.photo | filters.animation | filters.voice
 
 
-@Client.on_message(filters.channel & source_chat & MEDIA, group=0)
+@Client.on_message(filters.channel & source_chat & MEDIA)
 async def on_channel_media(client, message):
-    media = tg.extract_media(message)
-    if not media:
-        return
-    original_html = media.pop("caption_html")
-    f, created = await files.add_channel_file(message.chat.id, message.id, media)
-    if not created:
-        return                                   # this post was already processed (e.g. update replay)
-    auto = await settings.get("auto_caption")
-    markup = await channel_markup()
-    if not auto and not markup:
-        return
-    new_caption = None
-    if auto:
-        new_caption = await compute_caption(original_html, media.get("file_name"))
-    async with _edit_lock:                       # gentle on Telegram flood limits during bulk uploads
-        try:
-            if new_caption is not None:          # caption + permanent URL buttons in ONE edit
-                await tg.safe(client.edit_message_caption, message.chat.id, message.id, new_caption, reply_markup=markup)
-                await files.set_caption(f["_id"], new_caption)
-            else:
-                await tg.safe(client.edit_message_reply_markup, message.chat.id, message.id, markup)
-        except MessageNotModified:
-            pass
-        except ChatAdminRequired:
-            log.error("Edit failed in %s: bot lacks the 'Edit messages' right", message.chat.id)
-        except RPCError as e:
-            log.error("Edit failed in %s: %s", message.chat.id, type(e).__name__)
+    cap = message.caption
+    media = next((getattr(message, a) for a in ("document", "video", "audio", "animation", "voice", "photo")
+                  if getattr(message, a, None)), None)
+    new_caption = compute_caption(cap.html if cap else "", getattr(media, "file_name", None))
+    async with _lock:                                  # gentle on flood limits during bulk uploads
+        for _ in range(2):
+            try:
+                await client.edit_message_caption(message.chat.id, message.id, new_caption)
+                break
+            except MessageNotModified:
+                break
+            except FloodWait as e:
+                await asyncio.sleep(int(getattr(e, "value", 1)) + 1)
+            except ChatAdminRequired:
+                log.error("Edit failed in %s: bot needs the 'Edit messages' admin right", message.chat.id)
+                break
+            except RPCError as e:
+                log.error("Edit failed in %s: %s", message.chat.id, type(e).__name__)
+                break
         await asyncio.sleep(0.6)
