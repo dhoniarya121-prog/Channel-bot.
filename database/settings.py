@@ -41,6 +41,7 @@ DEFAULTS: dict = {
     "premium_notify": True,
     "notify_days": [3, 1],
     "auto_backup": False,
+    "roaroic_design": 0,
 }
 
 _cache: dict = {}
@@ -74,15 +75,24 @@ async def update_in(key: str, sub: str, value) -> None:
     await set(key, cur)
 
 
+DESIGN_VERSION = 3          # bump when the built-in ROAROIC links/design change; it is re-applied once per version
+
+
 async def seed_roaroic() -> bool:
-    """One-time upgrade for an existing database: install the ROAROIC links + caption design if the admin never set any link."""
-    links = await get("links") or {}
-    if any(v for v in links.values()):
+    """Install the ROAROIC links + caption design on startup, once per DESIGN_VERSION.
+    Old custom links are moved to `old_links` so their promo lines are stripped from captions."""
+    if (await get("roaroic_design") or 0) >= DESIGN_VERSION:
         return False
+    old_links = await get("old_links") or []
+    for v in (await get("links") or {}).values():
+        if v and v not in ROAROIC_LINKS.values() and v not in old_links:
+            old_links.append(v)
     templates = await get("caption_templates") or {}
     templates["roaroic"] = ROAROIC_TEMPLATE
     templates["roaroic_simple"] = ROAROIC_SIMPLE_TEMPLATE
     await set("links", dict(ROAROIC_LINKS))
+    await set("old_links", old_links[-50:])
     await set("caption_templates", templates)
     await set("active_template", "roaroic")
+    await set("roaroic_design", DESIGN_VERSION)
     return True
