@@ -34,6 +34,46 @@ MINIMAL_TEMPLATE = (
 )
 
 
+DIVIDER = "★━━━━━━❘༻༺❘━━━━━━★"
+ROAROIC_LINKS = {
+    "main_channel": "https://t.me/roaroic1",
+    "movie_bot": "https://t.me/roaroic_bot",
+    "movies_group": "https://t.me/roaroicgroup",
+    "discussion_group": "https://t.me/+HwZPzMx1njs2N2Y9",
+    "notification_channel": "https://t.me/+vNAhFBYrIQg5ZTk9",
+    "backup_channel": "https://t.me/roaroic0",
+}
+ROAROIC_SIMPLE_TEMPLATE = (
+    "<b>[ {backup_channel_at} ]</b> {original_caption}\n\n"
+    "<blockquote>✦━━━━━ 🔥 𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗡𝗘𝗧𝗪𝗢𝗥𝗞 🔥 ━━━━━✦\n"
+    '🎬 ➤ <b><a href="{main_channel}">𝗠𝗢𝗩𝗜𝗘 𝗨𝗣𝗗𝗔𝗧𝗘𝗦</a></b>\n'
+    '🤖 ➤ <b><a href="{movie_bot}">𝗠𝗢𝗩𝗜𝗘 𝗕𝗢𝗧</a></b>\n'
+    '👥 ➤ <b><a href="{movies_group}">𝗠𝗢𝗩𝗜𝗘𝗦 𝗚𝗥𝗢𝗨𝗣</a></b>\n'
+    '💬 ➤ <b><a href="{discussion_group}">𝗗𝗜𝗦𝗖𝗨𝗦𝗦𝗜𝗢𝗡 𝗚𝗥𝗢𝗨𝗣</a></b>\n'
+    '🔔 ➤ <b><a href="{notification_channel}">𝗡𝗢𝗧𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟</a></b>\n'
+    '💾 ➤ <b><a href="{backup_channel}">𝗕𝗔𝗖𝗞𝗨𝗣 𝗖𝗛𝗔𝗡𝗡𝗘𝗟</a></b>\n'
+    "✦━━━━━━━━━━━━━━━━━━━━━━✦</blockquote>\n"
+    + DIVIDER + "\n"
+    "⚡ <b>ROAROIC MOVIE'S || 0.1</b> ⚡"
+)
+ROAROIC_TEMPLATE = (
+    "<b>[ {backup_channel_at} ]</b> {original_caption}\n\n"
+    + DIVIDER + "\n"
+    "<blockquote>✨ <b>𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗢𝗙𝗙𝗜𝗖𝗜𝗔𝗟 𝗖𝗛𝗔𝗡𝗡𝗘𝗟𝗦</b>\n"
+    '🎬 ❯❯ <b><a href="{main_channel}">𝗠𝗢𝗩𝗜𝗘 𝗨𝗣𝗗𝗔𝗧𝗘𝗦</a></b>\n'
+    '💾 ❯❯ <b><a href="{backup_channel}">𝗕𝗔𝗖𝗞𝗨𝗣 𝗖𝗛𝗔𝗡𝗡𝗘𝗟</a></b>\n'
+    '🔔 ❯❯ <b><a href="{notification_channel}">𝗡𝗢𝗧𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟</a></b>\n'
+    "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈</blockquote>\n"
+    "<blockquote>🍿 <b>𝗪𝗔𝗧𝗖𝗛 • 𝗖𝗛𝗔𝗧 • 𝗥𝗘𝗤𝗨𝗘𝗦𝗧</b>\n"
+    '🤖 ❯❯ <b><a href="{movie_bot}">𝗠𝗢𝗩𝗜𝗘 𝗕𝗢𝗧</a></b>\n'
+    '👥 ❯❯ <b><a href="{movies_group}">𝗠𝗢𝗩𝗜𝗘𝗦 𝗚𝗥𝗢𝗨𝗣</a></b>\n'
+    '💬 ❯❯ <b><a href="{discussion_group}">𝗗𝗜𝗦𝗖𝗨𝗦𝗦𝗜𝗢𝗡 𝗚𝗥𝗢𝗨𝗣</a></b>\n'
+    "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈</blockquote>\n"
+    + DIVIDER + "\n"
+    "💫 <b>ROAROIC MOVIE'S || 0.1</b> 💫"
+)
+
+
 def label(key: str) -> str:
     return key.replace("_", " ").upper()
 
@@ -271,8 +311,10 @@ def fallback_title(file_name: str | None) -> str:
     return "New File"
 
 
-def _strip_prefix(cleaned: str, template: str) -> str:
+def _strip_prefix(cleaned: str, template: str, links: dict | None = None) -> str:
     prefix = template.split("{original_caption}")[0]
+    if "{" in prefix and links:
+        prefix = render(prefix, "", links)          # e.g. "[ @name ]" prefix built from a link placeholder
     if "{" in prefix:
         return cleaned
     s = cleaned.lstrip()
@@ -297,8 +339,8 @@ def build_caption(original_html: str | None, template: str, links: dict, old_lin
                   file_name: str | None = None, limit: int = CAPTION_LIMIT) -> str:
     known = [v for v in links.values() if v] + list(old_links or [])
     footer = {strip_tags(ln).strip() for ln in render(template, "", links).split("\n")} - {""}
-    cleaned = remove_known_links(_drop_footer(original_html or "", footer), known)
-    cleaned = _strip_prefix(cleaned, template)
+    cleaned = _strip_prefix(_drop_footer(original_html or "", footer), template, links)
+    cleaned = remove_known_links(cleaned, known)
     if not strip_tags(cleaned).strip():
         cleaned = html.escape(fallback_title(file_name))
     out = autoclose(render(template, cleaned, links))
