@@ -1,4 +1,6 @@
 """Thin helpers that turn plain data into Pyrogram objects (pyrogram is imported lazily)."""
+import inspect
+
 from utils.buttons import build_rows
 
 
@@ -25,3 +27,20 @@ def forwarded_chat(message):
     if chat is None:
         chat = getattr(getattr(message, "forward_origin", None), "chat", None)
     return chat
+
+
+def nopreview(fn) -> dict:
+    """Keyword that turns off link previews, whichever name this Pyrogram/Kurigram version uses for it."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "disable_web_page_preview" in params:
+        return {"disable_web_page_preview": True}
+    if "link_preview_options" in params:
+        try:
+            from pyrogram.types import LinkPreviewOptions
+            return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+        except Exception:
+            return {}
+    return {}
