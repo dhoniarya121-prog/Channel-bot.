@@ -7,9 +7,11 @@ from utils.captioning import compute_caption
 owner = filters.user(list(config.OWNER_IDS)) if config.OWNER_IDS else filters.user([0])
 
 
-@Client.on_message(filters.command("start") & filters.private & ~owner)
+@Client.on_message(filters.command(["start", "menu", "preview"]) & filters.private & ~owner)
 async def start_cmd(client, message):
-    await message.reply_text(f"✅ <b>{config.BOT_NAME}</b> is running.\n\nThis is a private channel helper bot.")
+    uid = message.from_user.id if message.from_user else 0
+    await message.reply_text(f"✅ <b>{config.BOT_NAME}</b> is running.\n\nThis is a private channel helper bot.\n"
+                             f"Your ID: <code>{uid}</code>\n<i>If you are the owner, put this number in OWNER_ID and restart.</i>")
 
 
 @Client.on_message(filters.command("preview") & filters.private & owner)
