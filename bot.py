@@ -27,6 +27,12 @@ async def main() -> None:
     await app.start()
     me = await app.get_me()
     log.info("%s started as @%s", config.BOT_NAME, me.username)
+    from utils import tg
+    if tg.colors_supported():
+        log.info("Coloured buttons: ON")
+    else:
+        log.warning("Coloured buttons: OFF - installed pyrogram/kurigram has no button 'style' support. "
+                    "Run: pip install -U --force-reinstall kurigram")
     try:
         await idle()
     finally:
