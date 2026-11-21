@@ -22,7 +22,7 @@ async def show(cq, screen) -> None:
     from pyrogram.errors import MessageNotModified
     text, rows = screen
     try:
-        await cq.message.edit_text(text, reply_markup=tg.menu_markup(rows), disable_web_page_preview=True)
+        await cq.message.edit_text(text, reply_markup=tg.menu_markup(rows), **tg.nopreview(cq.message.edit_text))
     except MessageNotModified:
         pass
 
@@ -30,7 +30,7 @@ async def show(cq, screen) -> None:
 async def reply(message, screen, note: str = "") -> None:
     text, rows = screen
     await message.reply_text((note + "\n\n" if note else "") + text, reply_markup=tg.menu_markup(rows),
-                             disable_web_page_preview=True)
+                             **tg.nopreview(message.reply_text))
 
 
 # ---- commands ---------------------------------------------------------------------------------------------
@@ -277,7 +277,7 @@ async def h_pv(client, cq, scope):
     text = compute_caption("Sample Movie (2024) 1080p WEB-DL", None, None if k == D else k)
     e = store.effective(k)
     mk = tg.url_markup(e["buttons"], e["per_row"]) if k != D else None
-    await client.send_message(cq.message.chat.id, text, reply_markup=mk, disable_web_page_preview=True)
+    await client.send_message(cq.message.chat.id, text, reply_markup=mk, **tg.nopreview(client.send_message))
     return None, "Preview sent 👇"
 
 

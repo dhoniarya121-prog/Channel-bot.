@@ -2,6 +2,7 @@
 from pyrogram import Client, filters
 
 import config
+from utils import tg
 from utils.captioning import compute_caption
 
 owner = filters.user(list(config.OWNER_IDS)) if config.OWNER_IDS else filters.user([0])
@@ -16,7 +17,8 @@ async def start_cmd(client, message):
 
 @Client.on_message(filters.command("preview") & filters.private & owner)
 async def preview_cmd(client, message):
-    await message.reply_text(compute_caption("Sample Movie (2024) 1080p WEB-DL", None), disable_web_page_preview=True)
+    await message.reply_text(compute_caption("Sample Movie (2024) 1080p WEB-DL", None),
+                             **tg.nopreview(message.reply_text))
 
 
 @Client.on_message(filters.command("id"))
