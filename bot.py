@@ -1,10 +1,10 @@
-"""ROAROIC CAPTION BOT - entry point. Pyrogram (Kurigram) + tiny aiohttp health server. No database."""
+"""ROAROIC CAPTION BOT - entry point. Pyrogram (Kurigram) + tiny aiohttp health server. Settings in one JSON file."""
 import asyncio
 import logging
 import sys
 
 import config
-from utils import logger
+from utils import logger, store
 
 log = logging.getLogger("roaroic")
 
@@ -15,6 +15,7 @@ async def main() -> None:
         print("Missing required environment variables: " + ", ".join(missing), file=sys.stderr)
         sys.exit(1)
     logger.setup()
+    store.init()
 
     from pyrogram import Client, enums, idle
     from utils import health

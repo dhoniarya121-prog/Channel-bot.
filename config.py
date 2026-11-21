@@ -1,4 +1,4 @@
-"""Configuration from environment variables only. No database is used by this bot."""
+"""Configuration from environment variables. Settings made from the bot menu live in one JSON file (DATA_FILE)."""
 import os
 import re
 
@@ -14,7 +14,7 @@ def _ids(raw: str | None) -> set[int]:
 
 
 BOT_NAME = "ROAROIC CAPTION BOT"
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 
 API_ID = int(os.getenv("API_ID") or 0)
 API_HASH = os.getenv("API_HASH", "")
@@ -25,6 +25,9 @@ SOURCE_CHANNELS = _ids(os.getenv("SOURCE_CHANNELS"))
 PORT = int(os.getenv("PORT") or 8080)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 SESSION_NAME = os.getenv("SESSION_NAME", "roaroic_caption")
+# One small JSON file holds every setting made from the bot menu (per-channel caption, links, buttons).
+# On Render put it on a persistent disk (see render.yaml), otherwise a redeploy resets it.
+DATA_FILE = os.getenv("DATA_FILE", "data/settings.json")
 
 
 def missing_required() -> list[str]:
