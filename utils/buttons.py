@@ -5,18 +5,13 @@ from utils.captions import normalize_url, validate_url
 
 MAX_BUTTONS = 20
 MAX_TEXT = 40
-# Auto colour cycle: button #1 -> slot 1, ... button #6 -> slot 1 again.
-# Telegram natively colours only 3 styles (blue/green/red); slots 4-5 use a coloured emoji prefix instead.
+# Auto colour cycle: button #1 -> blue, #2 -> green, #3 -> red, #4 -> default, #5 -> blue again ...
+# Only real Telegram button colours (no emoji). Telegram supports just these styles (+ default).
 COLOR_CYCLE = [
-    {"style": "primary", "prefix": ""},    # blue
-    {"style": "success", "prefix": ""},    # green
-    {"style": "danger", "prefix": ""},     # red
-    {"style": None, "prefix": "🟡 "},      # yellow
-    {"style": None, "prefix": "🟣 "},      # purple
-    {"style": None, "prefix": "🟠 "},      # orange
-    {"style": None, "prefix": "🟤 "},      # brown
-    {"style": None, "prefix": "⚪ "},      # white
-    {"style": None, "prefix": "⚫ "},      # black
+    {"style": "primary", "prefix": ""},  # blue
+    {"style": "success", "prefix": ""},  # green
+    {"style": "danger", "prefix": ""},   # red
+    {"style": None, "prefix": ""},       # default (grey / theme colour)
 ]
 _LINK = re.compile(r"^(?:https?://)?t\.me/(?:c/(\d+)|([A-Za-z0-9_]{4,}))/(\d+)(?:/\d+)?/?(?:\?.*)?$")
 
@@ -60,7 +55,7 @@ def build_rows(buttons: list[dict], per_row: int = 1) -> list[list[dict]]:
 
 
 def color_for(index: int) -> dict:
-    """Colour slot for the button at position `index` (0-based), cycling through 5 colours."""
+    """Colour slot for the button at position `index` (0-based), cycling through COLOR_CYCLE."""
     return COLOR_CYCLE[index % len(COLOR_CYCLE)]
 
 
