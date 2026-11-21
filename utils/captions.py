@@ -168,6 +168,17 @@ def autoclose(h: str) -> str:
     return h + "".join(f"</{t}>" for t in reversed(stack))
 
 
+def normalize_url(s: str) -> str:
+    """Friendly input: `@name` -> https://t.me/name, `t.me/name` -> https://t.me/name. Anything else unchanged."""
+    s = (s or "").strip()
+    m = re.fullmatch(r"@([A-Za-z][A-Za-z0-9_]{3,31})", s)
+    if m:
+        return "https://t.me/" + m.group(1)
+    if re.match(r"^(?:www\.)?(?:t|telegram)\.me/", s, re.I):
+        return "https://" + re.sub(r"^www\.", "", s, flags=re.I)
+    return s
+
+
 def validate_url(url: str) -> bool:
     url = (url or "").strip()
     if not url or len(url) > 300 or re.search(r"[\s\"'<>]", url):

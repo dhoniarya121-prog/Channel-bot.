@@ -1,7 +1,7 @@
 """Channel URL-button panels: parsing and layout (pure functions, no Telegram dependency)."""
 import re
 
-from utils.captions import validate_url
+from utils.captions import normalize_url, validate_url
 
 MAX_BUTTONS = 20
 MAX_TEXT = 40
@@ -16,7 +16,7 @@ def parse_lines(text: str) -> tuple[list[dict], list[str]]:
         if not line:
             continue
         label, sep, url = line.partition("|")
-        label, url = label.strip(), url.strip()
+        label, url = label.strip(), normalize_url(url)
         if not sep or not label or not url:
             errors.append(f"Line {n}: use  Text | https://link")
         elif len(label) > MAX_TEXT:
