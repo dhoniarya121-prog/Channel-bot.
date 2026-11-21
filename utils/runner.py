@@ -4,6 +4,7 @@ Modes: auto (obey the channel's ON/OFF switches) | caption | buttons | both | un
 """
 import asyncio
 import logging
+import os
 
 from utils import jobs, store, tg
 from utils.captioning import compute_caption
@@ -13,7 +14,8 @@ MEDIA_ATTRS = ("document", "video", "audio", "animation", "voice", "photo")
 MODES = {"caption": "📝 Captions", "buttons": "🔘 Buttons", "both": "📝🔘 Captions + Buttons",
          "unbutton": "🚫 Remove buttons"}
 BATCH = 100
-DELAY = 1.2
+DELAY = float(os.getenv("EDIT_DELAY", "0.3"))        # pause between old-post edits (was 1.2s)
+AUTO_DELAY = float(os.getenv("AUTO_EDIT_DELAY", "0.15"))  # pause after a new-post edit (was 0.6s)
 _lock = asyncio.Lock()
 _tasks: set = set()
 
@@ -74,7 +76,7 @@ async def auto_edit(client, m) -> None:
             except RPCError as e:
                 log.error("Edit failed in %s: %s", m.chat.id, type(e).__name__)
                 break
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(AUTO_DELAY)
 
 
 def _stop_markup():
@@ -122,7 +124,11 @@ async def _job(client, chat, mode, start, end, owner_id, status):
                 if not m or getattr(m, "empty", False):
                     continue
                 try:
-                    res = await apply(client, m, mode)
+                    try:
+                        res = await apply(client, m, mode)
+                    except FloodWait as e:  # wait, then retry this same post once
+                        await asyncio.sleep(int(getattr(e, "value", 1)) + 1)
+                        res = await apply(client, m, mode)
                     if res == "edited":
                         scanned += 1
                         done += 1
