@@ -2,19 +2,43 @@
 (link names, button text, ranges...). Menu screens are built in utils/ui.py."""
 import io
 import logging
+import re
 
 from pyrogram import Client, filters
 
 import config
 from utils import inputs, jobs, pending, runner, store, templates, tg, ui
-from utils.buttons import merge, parse_lines
+from utils.buttons import COLOR_MODES, merge, parse_lines
+from utils.fonts import FONTS
 from utils.captioning import compute_caption
 from utils.captions import normalize_url, validate_template, validate_url
 from utils.oldposts import parse_range
 
 log = logging.getLogger(__name__)
-owner = filters.user(list(config.OWNER_IDS)) if config.OWNER_IDS else filters.user([0])
 D = store.DEFAULT
+_CHID = re.compile(r"-\d{5,}")
+
+
+async def _is_allowed(_, __, update):
+    u = getattr(update, "from_user", None)
+    return bool(u) and store.user_allowed(u.id)
+
+
+async def _is_admin(_, __, update):
+    u = getattr(update, "from_user", None)
+    return bool(u) and store.is_admin(u.id)
+
+
+allowed = filters.create(_is_allowed, "allowed")          # everyone in PUBLIC_MODE (except banned), else OWNER_ID only
+admin_only = filters.create(_is_admin, "admin_only")      # OWNER_ID users
+
+
+def who(user) -> int:
+    """Remember who is talking for this update (their own default settings, their own channel list)."""
+    store.set_user(user.id)
+    if store.touch_user(user.id, getattr(user, "first_name", "") or getattr(user, "username", "") or ""):
+        log.info("new user %s", user.id)
+    return user.id
 
 
 # ---- sending screens --------------------------------------------------------------------------------------
@@ -34,24 +58,24 @@ async def reply(message, screen, note: str = "") -> None:
 
 
 # ---- commands ---------------------------------------------------------------------------------------------
-@Client.on_message(filters.command(["start", "menu"]) & filters.private & owner)
+@Client.on_message(filters.command(["start", "menu"]) & filters.private & allowed)
 async def menu_cmd(client, message):
-    pending.clear(message.from_user.id)
+    pending.clear(who(message.from_user))
     await reply(message, ui.main_screen())
 
 
-@Client.on_message(filters.command("cancel") & filters.private & owner)
+@Client.on_message(filters.command("cancel") & filters.private & allowed)
 async def cancel_cmd(client, message):
-    pending.clear(message.from_user.id)
+    pending.clear(who(message.from_user))
     await reply(message, ui.main_screen(), "❎ Cancelled.")
 
 
-@Client.on_message(filters.command("backup") & filters.private & owner)
+@Client.on_message(filters.command("backup") & filters.private & admin_only)
 async def backup_cmd(client, message):
     await _send_backup(client, message.chat.id)
 
 
-@Client.on_message(filters.command("restore") & filters.private & owner)
+@Client.on_message(filters.command("restore") & filters.private & admin_only)
 async def restore_cmd(client, message):
     target = message.reply_to_message
     doc = getattr(target, "document", None)
@@ -61,6 +85,65 @@ async def restore_cmd(client, message):
     buf = await client.download_media(target, in_memory=True)
     ok, msg = store.import_json(buf.getvalue())
     await reply(message, ui.main_screen(), ("✅ " if ok else "❌ ") + msg)
+
+
+async def channel_list_pages(client) -> list[str]:
+    """Name, public link and ID of every channel in the list, split into message-sized pages."""
+    chs = store.list_channels()
+    if not chs:
+        return ["No channels in the list yet. Use ➕ Add Channel in /menu."]
+    blocks = []
+    for n, (cid, c) in enumerate(chs, 1):
+        title, link, warn = c.get("title") or cid, None, ""
+        try:
+            chat = await client.get_chat(int(cid))
+            title = chat.title or title
+            if getattr(chat, "username", None):
+                link = f"https://t.me/{chat.username}"
+        except Exception:
+            warn = "  ⚠️ <i>can't open (is the bot still admin?)</i>"
+        blocks.append(f"{n}. <b>{ui.esc(title)}</b>{warn}\n{link or '🔒 private channel (no public link)'}\n<code>{cid}</code>")
+    pages, cur = [], f"📋 <b>Channels ({len(blocks)})</b>\n"
+    for blk in blocks:
+        if len(cur) + len(blk) > 3500:
+            pages.append(cur)
+            cur = ""
+        cur += "\n" + blk + "\n"
+    pages.append(cur)
+    return pages
+
+
+@Client.on_message(filters.command("channels") & filters.private & allowed)
+async def channels_cmd(client, message):
+    who(message.from_user)
+    for page in await channel_list_pages(client):
+        await message.reply_text(page, **tg.nopreview(message.reply_text))
+
+
+async def h_cl(client, cq):
+    for page in await channel_list_pages(client):
+        await client.send_message(cq.message.chat.id, page, **tg.nopreview(client.send_message))
+    return None, "List sent 👇"
+
+
+@Client.on_message(filters.command("stats") & filters.private & admin_only)
+async def stats_cmd(client, message):
+    who(message.from_user)
+    await reply(message, ui.stats_screen())
+
+
+@Client.on_message(filters.command(["ban", "unban"]) & filters.private & admin_only)
+async def ban_cmd(client, message):
+    cmd, args = message.command[0].lower(), message.command[1:]
+    if not args or not args[0].lstrip("-").isdigit():
+        await message.reply_text(f"Use: /{cmd} &lt;user id&gt;")
+        return
+    uid = int(args[0])
+    if store.is_admin(uid):
+        await message.reply_text("That is an admin.")
+        return
+    store.ban(uid, cmd == "ban")
+    await message.reply_text(f"{'🚫 Banned' if cmd == 'ban' else '✅ Unbanned'} <code>{uid}</code>")
 
 
 async def _send_backup(client, chat_id) -> None:
@@ -122,18 +205,18 @@ async def h_tg(client, cq, scope, what):
 
 
 # template
-async def h_tpl(client, cq, scope):
-    return ui.template_screen(scope)
+async def h_tpl(client, cq, scope, page="0"):
+    return ui.template_screen(scope, int(page))
 
 
-async def h_tps(client, cq, scope, key):
+async def h_tps(client, cq, scope, key, page="0"):
     if key == "inherit" and store.key(scope) != D:
         store.update(scope, template=None)
     elif key in templates.PRESETS:
         store.update(scope, template=key)
     else:
-        return ui.template_screen(scope)
-    return ui.template_screen(scope), "Saved ✅"
+        return ui.template_screen(scope, int(page))
+    return ui.template_screen(scope, int(page)), "Saved ✅  Tap 👁 Preview"
 
 
 async def h_tpc(client, cq, scope):
@@ -237,7 +320,19 @@ async def h_btx(client, cq, scope, idx):
 
 
 async def h_btr(client, cq, scope, n):
-    store.update(scope, per_row=2 if n == "2" else 1)
+    store.update(scope, per_row=int(n) if n in ("0", "1", "2", "3") else 1)
+    return ui.buttons_screen(scope), "Saved ✅"
+
+
+async def h_btcol(client, cq, scope, mode):
+    if mode in COLOR_MODES:
+        store.update(scope, color=mode)
+    return ui.buttons_screen(scope), "Saved ✅"
+
+
+async def h_btf(client, cq, scope, font):
+    if font in FONTS:
+        store.update(scope, font=font)
     return ui.buttons_screen(scope), "Saved ✅"
 
 
@@ -267,7 +362,8 @@ async def h_rm(client, cq, scope, mode):
 
 
 async def h_stop(client, cq):
-    jobs.request_stop()
+    if not jobs.request_stop(cq.from_user.id):
+        return None, "!That job was started by someone else."
     return None, "Stopping after the current post…"
 
 
@@ -276,12 +372,20 @@ async def h_pv(client, cq, scope):
     k = store.key(scope)
     text = compute_caption("Sample Movie (2024) 1080p WEB-DL", None, None if k == D else k)
     e = store.effective(k)
-    mk = tg.url_markup(e["buttons"], e["per_row"]) if k != D else None
+    mk = tg.url_markup(e["buttons"], e["per_row"], e["color"], e["font"]) if k != D else None
     await client.send_message(cq.message.chat.id, text, reply_markup=mk, **tg.nopreview(client.send_message))
     return None, "Preview sent 👇"
 
 
+async def h_st(client, cq):
+    if not store.is_admin(cq.from_user.id):
+        return None, "!Admins only."
+    return ui.stats_screen()
+
+
 async def h_bk(client, cq):
+    if not store.is_admin(cq.from_user.id):
+        return None, "!Admins only."
     await _send_backup(client, cq.message.chat.id)
     return None, "Backup sent 👇"
 
@@ -292,8 +396,8 @@ HANDLERS = {
     "lk": h_lk, "lka": h_lka, "lki": h_lki, "lke": h_lke, "lkd": h_lkd, "lkr": h_lkr,
     "ol": h_ol, "ola": h_ola, "olc": h_olc,
     "bt": h_bt, "bta": h_bta, "btm": h_btm, "bti": h_bti, "bte": h_bte, "btu": h_btu, "btd": h_btd,
-    "btx": h_btx, "btr": h_btr, "btc": h_btc, "btcy": h_btcy,
-    "run": h_run, "rm": h_rm, "stop": h_stop, "pv": h_pv, "bk": h_bk,
+    "btx": h_btx, "btr": h_btr, "btcol": h_btcol, "btf": h_btf, "btc": h_btc, "btcy": h_btcy,
+    "run": h_run, "rm": h_rm, "stop": h_stop, "pv": h_pv, "bk": h_bk, "cl": h_cl, "st": h_st,
 }
 
 
@@ -304,12 +408,16 @@ def split_result(res):
     return res, None
 
 
-@Client.on_callback_query(owner)
+@Client.on_callback_query(allowed)
 async def on_callback(client, cq):
     parts = (cq.data or "").split(":")
     handler = HANDLERS.get(parts[0])
     if handler is None or cq.message is None:
         await cq.answer()
+        return
+    uid = who(cq.from_user)
+    if any(_CHID.fullmatch(p) and not store.can_manage(uid, p) for p in parts[1:]):
+        await cq.answer("This channel is not yours.", show_alert=True)       # users only touch their own channels
         return
     if parts[0] not in ("noop", "stop"):
         pending.clear(cq.from_user.id)              # a new menu tap cancels any half-finished typed step
@@ -343,12 +451,16 @@ def _type_name(chat) -> str:
     return str(getattr(t, "name", t)).upper().split(".")[-1]
 
 
+def _status(member) -> str:
+    return str(getattr(getattr(member, "status", None), "name", getattr(member, "status", ""))).upper().split(".")[-1]
+
+
 async def _perm_line(client, chat_id) -> str:
     try:
         me = await client.get_chat_member(chat_id, "me")
     except Exception:
         return "⚠️ I could not check my admin rights. Make sure I am admin with <i>Edit messages</i>."
-    status = str(getattr(getattr(me, "status", None), "name", getattr(me, "status", ""))).upper().split(".")[-1]
+    status = _status(me)
     if status == "OWNER":
         return "✅ I am the owner there."
     if status == "ADMINISTRATOR":
@@ -359,7 +471,15 @@ async def _perm_line(client, chat_id) -> str:
     return "⚠️ I am not admin there yet. Make me admin with the <i>Edit messages</i> right."
 
 
+async def _user_is_channel_admin(client, chat_id, uid) -> bool:
+    try:
+        return _status(await client.get_chat_member(chat_id, uid)) in ("OWNER", "ADMINISTRATOR")
+    except Exception:
+        return False
+
+
 async def in_addch(client, message, st):
+    uid = message.from_user.id
     chat = tg.forwarded_chat(message)
     ref = chat.id if chat else inputs.parse_channel_ref(message.text or "")
     if ref is None:
@@ -370,7 +490,17 @@ async def in_addch(client, message, st):
         return "retry", "❌ I can't open that chat. Make me admin there first, then send it again."
     if _type_name(chat) != "CHANNEL":
         return "retry", "❌ That is not a channel. Send a channel."
-    _, created = store.ensure_channel(chat.id, chat.title)
+    if not store.is_admin(uid) and not await _user_is_channel_admin(client, chat.id, uid):
+        return "retry", ("❌ You must be an admin of that channel (and I must be admin there too). "
+                         "Check both, then send it again.")
+    existing = store.get(chat.id)
+    if existing and existing.get("owner") not in (None, uid) and not store.is_admin(uid):
+        return "done", ui.main_screen(), "❌ That channel is already managed by another user."
+    if not existing or existing.get("owner") != uid:
+        limit = config.MAX_CHANNELS_PER_USER
+        if not store.is_admin(uid) and limit and store.count_owned(uid) >= limit:
+            return "done", ui.channels_screen(0), f"❌ You can add up to {limit} channels."
+    _, created = store.ensure_channel(chat.id, chat.title, owner=uid)
     note = ("✅ Channel added.\n" if created else "ℹ️ It was already in the list.\n") + await _perm_line(client, chat.id)
     return "done", ui.channel_screen(str(chat.id)), note
 
@@ -476,9 +606,9 @@ INPUTS = {"addch": in_addch, "link_add": in_link_add, "link_url": in_link_url, "
           "btn_edit": in_btn_edit, "run_range": in_run_range}
 
 
-@Client.on_message(filters.private & owner & has_pending, group=1)
+@Client.on_message(filters.private & allowed & has_pending, group=1)
 async def on_input(client, message):
-    uid = message.from_user.id
+    uid = who(message.from_user)
     st = pending.get(uid)
     if not st or (message.text or "").startswith("/"):
         return                                      # commands (/menu, /cancel ...) are handled by their own handlers
