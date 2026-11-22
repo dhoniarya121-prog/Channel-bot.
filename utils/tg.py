@@ -2,6 +2,7 @@
 import inspect
 
 from utils.buttons import build_rows, color_for
+from utils.fonts import fancy
 
 
 def _make_button(text: str, slot: dict, **kw):
@@ -35,9 +36,9 @@ def _colored_button(text: str, url: str, slot: dict):
     return _make_button(text, slot, url=url)
 
 
-def url_markup(buttons: list[dict], per_row: int = 1):
+def url_markup(buttons: list[dict], per_row: int = 1, color: str = "auto", font: str = "normal"):
     """Channel post buttons -> InlineKeyboardMarkup (None when there are no buttons).
-    Buttons are coloured automatically, cycling through 5 colours in order."""
+    color: auto (cycle blue/green/red/default) | primary | success | danger | none.  font: normal | bold | small | mono."""
     if not buttons:
         return None
     from pyrogram.types import InlineKeyboardMarkup
@@ -45,7 +46,8 @@ def url_markup(buttons: list[dict], per_row: int = 1):
     for row in build_rows(buttons, per_row):
         out = []
         for b in row:
-            out.append(_colored_button(b["text"], b["url"], color_for(n)))
+            slot = color_for(n) if color == "auto" else {"style": None if color == "none" else color, "prefix": ""}
+            out.append(_colored_button(fancy(b["text"], font), b["url"], slot))
             n += 1
         rows.append(out)
     return InlineKeyboardMarkup(rows)

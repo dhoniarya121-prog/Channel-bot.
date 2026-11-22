@@ -3,6 +3,7 @@
 Scopes: DEFAULT ("d") holds the settings every channel inherits; a channel id holds that channel's own
 overrides. A channel field set to None means "use the default". Settings.py only seeds the very first default.
 """
+import contextvars
 import copy
 import json
 import logging
@@ -20,6 +21,7 @@ MEMORY = ":memory:"          # init(MEMORY) = keep everything in RAM (tests)
 MAX_LINKS = 20
 MAX_OLD_LINKS = 30
 _s: dict = {"path": None, "data": None}
+_user: contextvars.ContextVar = contextvars.ContextVar("roaroic_user", default=None)
 
 
 def _fresh_default() -> dict:
@@ -28,35 +30,50 @@ def _fresh_default() -> dict:
 
 
 def _fresh_channel(title: str = "") -> dict:
-    return {"title": title or "", "caption": True, "buttons_on": True, "template": None, "custom_template": "",
-            "links": None, "old_links": None, "buttons": [], "per_row": 1}
+    return {"title": title or "", "owner": None, "caption": True, "buttons_on": True, "template": None, "custom_template": "",
+            "links": None, "old_links": None, "buttons": [], "per_row": 1,
+            "color": "auto", "font": "normal"}
 
 
 def _normalise(data) -> dict:
     data = data if isinstance(data, dict) else {}
     d = _fresh_default()
     d.update({k: v for k, v in (data.get("default") or {}).items() if k in d})
-    channels = {}
+    channels, users = {}, {}
     for k, c in (data.get("channels") or {}).items():
         if not re.fullmatch(r"-?\d+", str(k)) or not isinstance(c, dict):
             continue
         ch = _fresh_channel()
         ch.update({kk: vv for kk, vv in c.items() if kk in ch})
+        if not isinstance(ch["owner"], int) or isinstance(ch["owner"], bool):
+            ch["owner"] = None
         channels[str(int(k))] = ch
-    for c in [d, *channels.values()]:
-        if c.get("per_row") not in (1, 2):
+    for k, u in (data.get("users") or {}).items():
+        if not re.fullmatch(r"\d+", str(k)) or not isinstance(u, dict):
+            continue
+        ud = _fresh_default()
+        ud.update({kk: vv for kk, vv in (u.get("default") or {}).items() if kk in ud})
+        users[str(int(k))] = {"name": str(u.get("name") or "")[:64], "default": ud}
+    for c in [d, *channels.values(), *(u["default"] for u in users.values())]:
+        if c.get("per_row") not in (0, 1, 2, 3):
             c["per_row"] = 1
+        if c.get("color", "auto") not in ("auto", "primary", "success", "danger", "none"):
+            c["color"] = "auto"
+        if c.get("font", "normal") not in ("normal", "bold", "small", "mono"):
+            c["font"] = "normal"
         if not isinstance(c.get("buttons"), list):
             c["buttons"] = []
         if c.get("links") is not None and not isinstance(c["links"], dict):
             c["links"] = None
         if c.get("old_links") is not None and not isinstance(c["old_links"], list):
             c["old_links"] = None
-    if not isinstance(d["links"], dict):
-        d["links"] = dict(settings.LINKS)
-    if not isinstance(d["old_links"], list):
-        d["old_links"] = []
-    return {"version": 1, "default": d, "channels": channels}
+    for c in [d, *(u["default"] for u in users.values())]:
+        if not isinstance(c["links"], dict):
+            c["links"] = dict(settings.LINKS)
+        if not isinstance(c["old_links"], list):
+            c["old_links"] = []
+    banned = sorted({int(x) for x in (data.get("banned") or []) if re.fullmatch(r"\d+", str(x))})
+    return {"version": 2, "default": d, "channels": channels, "users": users, "banned": banned}
 
 
 def _load(path) -> dict:
@@ -103,24 +120,118 @@ def key(scope) -> str:
     return DEFAULT if scope in (None, DEFAULT) else str(int(scope))
 
 
+# ---- who is using the bot (set once per incoming update by the plugins) -------------------------------------
+def set_user(uid) -> None:
+    _user.set(int(uid) if uid else None)
+
+
+def current_user() -> int | None:
+    return _user.get()
+
+
+def is_admin(uid) -> bool:
+    return bool(uid) and int(uid) in config.OWNER_IDS
+
+
+def _user_rec(uid) -> dict:
+    users = _d()["users"]
+    rec = users.get(str(int(uid)))
+    if rec is None:                                   # new user: starts from a copy of the global default
+        rec = users[str(int(uid))] = {"name": "", "default": copy.deepcopy(_d()["default"])}
+        rec["default"]["buttons"], rec["default"]["per_row"] = [], 1
+    return rec
+
+
+def touch_user(uid, name: str = "") -> bool:
+    """Remember a user (first time = True). Keeps the display name fresh."""
+    new = str(int(uid)) not in _d()["users"]
+    rec = _user_rec(uid)
+    name = (name or "")[:64]
+    if new or (name and rec["name"] != name):
+        rec["name"] = name or rec["name"]
+        _save()
+    return new
+
+
+def _base(scope=None) -> dict:
+    """The default settings that apply to a scope: the user's own default, or the channel owner's default."""
+    d = _d()
+    k = key(scope)
+    if k == DEFAULT:
+        uid = current_user()
+        return _user_rec(uid)["default"] if uid else d["default"]
+    c = d["channels"].get(k)
+    owner = c.get("owner") if c else None
+    rec = d["users"].get(str(owner)) if owner else None
+    return rec["default"] if rec else d["default"]
+
+
 def get(scope) -> dict | None:
     k = key(scope)
-    return _d()["default"] if k == DEFAULT else _d()["channels"].get(k)
+    return _base(DEFAULT) if k == DEFAULT else _d()["channels"].get(k)
+
+
+def owner_of(scope) -> int | None:
+    c = get(scope) if key(scope) != DEFAULT else None
+    return c.get("owner") if c else None
+
+
+def can_manage(uid, scope) -> bool:
+    if key(scope) == DEFAULT:
+        return True
+    c = _d()["channels"].get(key(scope))
+    return c is not None and (is_admin(uid) or (c.get("owner") is not None and c["owner"] == int(uid)))
+
+
+def my_channels(uid=None) -> list[tuple[str, dict]]:
+    uid = uid if uid is not None else current_user()
+    return [(k, c) for k, c in list_channels() if is_admin(uid) or (uid and c.get("owner") == int(uid))]
+
+
+def count_owned(uid) -> int:
+    return sum(1 for c in _d()["channels"].values() if c.get("owner") == int(uid))
+
+
+# ---- access / bans ------------------------------------------------------------------------------------------
+def is_banned(uid) -> bool:
+    return int(uid) in _d()["banned"] and not is_admin(uid)
+
+
+def user_allowed(uid) -> bool:
+    return bool(uid) and not is_banned(uid) and (config.PUBLIC_MODE or is_admin(uid))
+
+
+def ban(uid, on: bool = True) -> None:
+    b = set(_d()["banned"])
+    (b.add if on else b.discard)(int(uid))
+    _d()["banned"] = sorted(b)
+    _save()
+
+
+def stats() -> dict:
+    return {"users": len(_d()["users"]), "channels": len(_d()["channels"]), "banned": len(_d()["banned"])}
 
 
 def list_channels() -> list[tuple[str, dict]]:
     return sorted(_d()["channels"].items(), key=lambda kv: ((kv[1].get("title") or "").lower(), kv[0]))
 
 
-def ensure_channel(chat_id: int, title: str | None = None) -> tuple[dict, bool]:
+def ensure_channel(chat_id: int, title: str | None = None, owner: int | None = None) -> tuple[dict, bool]:
     k = str(int(chat_id))
     ch = _d()["channels"].get(k)
     if ch is not None:
+        changed = False
         if title and ch.get("title") != title:
-            ch["title"] = title
+            ch["title"], changed = title, True
+        if owner and ch.get("owner") is None:          # an unclaimed channel gets its owner
+            ch["owner"], changed = int(owner), True
+        if changed:
             _save()
         return ch, False
     ch = _d()["channels"][k] = _fresh_channel(title or "")
+    if owner:
+        ch["owner"] = int(owner)
+        _user_rec(owner)
     _save()
     return ch, True
 
@@ -143,7 +254,7 @@ def update(scope, **fields) -> bool:
 
 def effective(scope=None) -> dict:
     """Everything caption/button code needs for one chat, with defaults filled in."""
-    d = _d()["default"]
+    d = _base(scope)
     c = None if key(scope) == DEFAULT else _d()["channels"].get(key(scope))
     own_links = c is not None and c["links"] is not None
     links = c["links"] if own_links else d["links"]
@@ -158,6 +269,7 @@ def effective(scope=None) -> dict:
         "template_key": tkey, "template": templates.resolve(tkey, custom, links),
         "links": dict(links), "old_links": list(old),
         "buttons": list(c["buttons"]) if c is not None else [], "per_row": c["per_row"] if c is not None else 1,
+        "color": c.get("color", "auto") if c is not None else "auto", "font": c.get("font", "normal") if c is not None else "normal",
         "own_links": own_links, "own_template": bool(c is not None and c["template"]),
         "own_old_links": bool(c is not None and c["old_links"] is not None),
     }
@@ -169,7 +281,7 @@ def _own_links(scope) -> dict | None:
     if c is None:
         return None
     if c["links"] is None:                       # first edit of a channel: start from a copy of the default links
-        c["links"] = copy.deepcopy(_d()["default"]["links"])
+        c["links"] = copy.deepcopy(_base(scope)["links"])
     return c["links"]
 
 
@@ -210,8 +322,7 @@ def add_old_links(scope, items: list[str]) -> int:
     c = get(scope)
     if c is None:
         return 0
-    cur = list(c["old_links"] if c["old_links"] is not None else _d()["default"]["old_links"]) \
-        if key(scope) != DEFAULT else list(c["old_links"])
+    cur = list(c["old_links"] if c["old_links"] is not None else _base(scope)["old_links"])
     seen = {x.lower() for x in cur}
     added = 0
     for it in items:

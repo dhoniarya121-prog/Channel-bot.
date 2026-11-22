@@ -46,7 +46,7 @@ async def apply(client, m, mode: str = "auto") -> str:
     auto = mode == "auto"
     want_caption = mode in ("caption", "both") or (auto and eff["caption"])
     want_btn = bool(eff["buttons"]) and (mode in ("buttons", "both") or (auto and eff["buttons_on"]))
-    markup = tg.url_markup(eff["buttons"], eff["per_row"]) if want_btn else None
+    markup = tg.url_markup(eff["buttons"], eff["per_row"], eff["color"], eff["font"]) if want_btn else None
     if want_caption and media:
         cap = m.caption
         new = compute_caption(cap.html if cap else "", getattr(media, "file_name", None), chat_id)
@@ -85,7 +85,7 @@ def _stop_markup():
 
 async def start_job(client, chat_id: int, mode: str, lo: int, hi: int, owner_id: int, reply_to):
     """Start an old-posts run. Returns the status message, or None when another job is already running."""
-    if not jobs.acquire("old posts"):
+    if not jobs.acquire("old posts", owner_id):
         return None
     try:
         status = await reply_to.reply_text(f"🕘 Started: {MODES.get(mode, mode)} on IDs {lo}–{hi}…",

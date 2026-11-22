@@ -50,8 +50,15 @@ def merge(existing: list[dict], new: list[dict]) -> tuple[list[dict], int, int]:
 
 
 def build_rows(buttons: list[dict], per_row: int = 1) -> list[list[dict]]:
-    per_row = 2 if per_row == 2 else 1
+    """Layouts: 1/2/3 buttons per row, or 0 = smart (first button full width, then pairs)."""
+    if per_row == 0:
+        rest = buttons[1:]
+        return ([buttons[:1]] if buttons else []) + [rest[i:i + 2] for i in range(0, len(rest), 2)]
+    per_row = per_row if per_row in (2, 3) else 1
     return [buttons[i:i + per_row] for i in range(0, len(buttons), per_row)]
+
+
+COLOR_MODES = {"auto": "🌈 Auto", "primary": "🔵 Blue", "success": "🟢 Green", "danger": "🔴 Red", "none": "⚪ Default"}
 
 
 def color_for(index: int) -> dict:

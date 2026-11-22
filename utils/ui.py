@@ -7,13 +7,15 @@ from urllib.parse import urlparse
 
 import config
 from utils import jobs, store, templates
-from utils.buttons import MAX_BUTTONS
+from utils.buttons import COLOR_MODES, MAX_BUTTONS
 from utils.captions import label
+from utils.fonts import FONTS
 from utils.runner import MODES
 from utils.text import esc, trunc
 
 D = store.DEFAULT
 PER_PAGE = 8
+TPL_PER_PAGE = 7
 
 
 def b(text: str, data: str) -> dict:
@@ -31,7 +33,7 @@ def _host(url: str) -> str:
 
 def scope_name(scope) -> str:
     if store.key(scope) == D:
-        return "🌐 Default settings"
+        return "🌐 My default settings"
     c = store.get(scope)
     return "📡 " + esc((c or {}).get("title") or scope)
 
@@ -42,24 +44,39 @@ def missing(back: str = "chs:0") -> tuple[str, list]:
 
 # ---- main -------------------------------------------------------------------------------------------------
 def main_screen() -> tuple[str, list]:
-    n = len(store.list_channels())
-    text = (f"🤖 <b>{esc(config.BOT_NAME)}</b>  <i>v{config.VERSION}</i>\n\n📡 Channels: <b>{n}</b>\n\n"
-            "Everything is controlled from these buttons — no file editing needed.")
-    return text, [[b("📡 My Channels", "chs:0"), b("➕ Add Channel", "add")],
-                  [b("🌐 Default Settings", "ch:d"), b("👁 Preview", "pv:d")],
-                  [b("💾 Backup", "bk"), b("❓ Help", "help")]]
+    n = len(store.my_channels())
+    admin = store.is_admin(store.current_user())
+    text = (f"🤖 <b>{esc(config.BOT_NAME)}</b>  <i>v{config.VERSION}</i>\n\n📡 Your channels: <b>{n}</b>\n\n"
+            "Add your channel, then customise its caption, links and buttons — all with these buttons.")
+    rows = [[b("📡 My Channels", "chs:0"), b("➕ Add Channel", "add")],
+            [b("🌐 My Default Settings", "ch:d"), b("👁 Preview", "pv:d")],
+            [b("📋 Links list", "cl"), b("❓ Help", "help")]]
+    if admin:
+        rows.append([b("📊 Stats", "st"), b("💾 Backup", "bk")])
+    return text, rows
+
+
+def stats_screen() -> tuple[str, list]:
+    st = store.stats()
+    busy = jobs.busy()
+    text = (f"📊 <b>Stats</b>\n\n👥 Users: <b>{st['users']}</b>\n📡 Channels: <b>{st['channels']}</b>\n"
+            f"🚫 Banned: <b>{st['banned']}</b>\n⚙️ Access: <b>{'public' if config.PUBLIC_MODE else 'owner only'}</b>\n"
+            f"⏳ Job: <b>{esc(busy) if busy else 'none'}</b>\n\nAdmin commands: /stats /ban &lt;id&gt; /unban &lt;id&gt; /backup /restore")
+    return text, [[b("⬅ Menu", "m")]]
 
 
 def help_screen() -> tuple[str, list]:
     text = ("❓ <b>How it works</b>\n\n"
-            "1️⃣ Make me <b>admin</b> in your channel (<i>Edit messages</i> right).\n"
-            "2️⃣ <b>➕ Add Channel</b> (or just post once — I notice the channel myself).\n"
+            "1️⃣ In your channel, make me <b>admin</b> (with the <i>Edit messages</i> right).\n"
+            "2️⃣ Here: <b>➕ Add Channel</b> → forward any post from it (or send its @username / link). "
+            "You must be an admin of that channel.\n"
             "3️⃣ Open the channel and set:\n"
             "• 🎨 <b>Template</b> – caption design\n• 🔗 <b>Links</b> – names + URLs used in the design\n"
             "• 🔘 <b>Buttons</b> – link buttons shown under every post\n"
             "• ▶️ <b>Run on old posts</b> – apply captions/buttons to posts already in the channel\n\n"
-            "🌐 <b>Default Settings</b> are used by every channel that has no settings of its own.\n\n"
-            "Commands: /menu /preview /id /backup /restore /cancel")
+            "🌐 <b>My Default Settings</b> are used by all of <i>your</i> channels that have no settings of their own.\n"
+            "Everything you set is private to you.\n\n"
+            "Commands: /menu /channels /preview /id /cancel")
     return text, [[b("⬅ Menu", "m")]]
 
 
@@ -69,7 +86,7 @@ def prompt_screen(text: str, scope: str = "m") -> tuple[str, list]:
 
 # ---- channels ---------------------------------------------------------------------------------------------
 def channels_screen(page: int = 0) -> tuple[str, list]:
-    chs = store.list_channels()
+    chs = store.my_channels()
     pages = max(1, -(-len(chs) // PER_PAGE))
     page = max(0, min(page, pages - 1))
     rows = []
@@ -79,10 +96,10 @@ def channels_screen(page: int = 0) -> tuple[str, list]:
     if pages > 1:
         rows.append([b("⬅", f"chs:{page - 1}") if page else b("·", "noop"), b(f"{page + 1}/{pages}", "noop"),
                      b("➡", f"chs:{page + 1}") if page < pages - 1 else b("·", "noop")])
-    rows.append([b("➕ Add Channel", "add"), b("⬅ Menu", "m")])
+    rows.append([b("➕ Add Channel", "add"), b("📋 Links list", "cl")])
+    rows.append([b("⬅ Menu", "m")])
     text = "📡 <b>My Channels</b>\n\n" + ("Tap a channel to manage it.\n📝 = auto caption  🔘 = auto buttons" if chs else
-                                         "No channels yet.\nTap ➕ <b>Add Channel</b> — or post something in a channel "
-                                         "where I am admin and I will add it myself.")
+                                         "No channels yet.\nMake me admin in your channel, then tap ➕ <b>Add Channel</b>.")
     return text, rows
 
 
@@ -95,7 +112,7 @@ def channel_screen(scope) -> tuple[str, list]:
     tname = templates.name(e["template_key"]) + ("" if e["own_template"] or k == D else "  <i>(default)</i>")
     links = f"{len(e['links'])}" + ("" if e["own_links"] or k == D else "  <i>(default)</i>")
     if k == D:
-        text = (f"🌐 <b>Default settings</b>\n<i>Used by every channel that has no settings of its own.</i>\n\n"
+        text = (f"🌐 <b>My default settings</b>\n<i>Used by all your channels that have no settings of their own.</i>\n\n"
                 f"🎨 Template: <b>{tname}</b>\n🔗 Links: <b>{links}</b>\n🧹 Old links to remove: <b>{len(e['old_links'])}</b>")
         rows = [[b("🎨 Template", f"tpl:{k}"), b("🔗 Links", f"lk:{k}")],
                 [b("🧹 Old links", f"ol:{k}"), b("👁 Preview", f"pv:{k}")],
@@ -107,6 +124,8 @@ def channel_screen(scope) -> tuple[str, list]:
             f"🔘 Auto buttons: <b>{_on(e['buttons_on'])}</b>  ({n_btn} button{'s' if n_btn != 1 else ''})\n"
             f"🎨 Template: <b>{tname}</b>\n🔗 Links: <b>{links}</b>\n"
             f"🧹 Old links to remove: <b>{len(e['old_links'])}</b>")
+    if store.is_admin(store.current_user()):
+        text += f"\n👤 Owner: <code>{c.get('owner') or '—'}</code>"
     rows = [[b(f"📝 Caption: {_on(e['caption'])}", f"tg:{k}:cap"), b(f"🔘 Buttons: {_on(e['buttons_on'])}", f"tg:{k}:btn")],
             [b("🎨 Template", f"tpl:{k}"), b("🔗 Links", f"lk:{k}")],
             [b(f"🔘 Manage buttons ({n_btn})", f"bt:{k}")],
@@ -123,22 +142,28 @@ def confirm_remove_screen(scope) -> tuple[str, list]:
 
 
 # ---- template ---------------------------------------------------------------------------------------------
-def template_screen(scope) -> tuple[str, list]:
+def template_screen(scope, page: int = 0) -> tuple[str, list]:
     k = store.key(scope)
     if store.get(k) is None:
         return missing()
     e = store.effective(k)
     own = e["own_template"] or k == D
+    keys = list(templates.PRESETS)
+    pages = max(1, -(-len(keys) // TPL_PER_PAGE))
+    page = max(0, min(page, pages - 1))
     rows = []
-    for key, name in templates.PRESETS.items():
+    for key in keys[page * TPL_PER_PAGE:(page + 1) * TPL_PER_PAGE]:
         mark = "✅ " if own and e["template_key"] == key else ""
-        rows.append([b(mark + name, f"tps:{k}:{key}")])
+        rows.append([b(mark + templates.PRESETS[key], f"tps:{k}:{key}:{page}")])
+    rows.append([b("⬅" if page else "·", f"tpl:{k}:{page - 1}" if page else "noop"), b(f"{page + 1}/{pages}", "noop"),
+                 b("➡" if page < pages - 1 else "·", f"tpl:{k}:{page + 1}" if page < pages - 1 else "noop")])
     rows.append([b(("✅ " if own and e["template_key"] == templates.CUSTOM else "") + "✍️ Custom template", f"tpc:{k}")])
     if k != D:
-        rows.append([b(("✅ " if not own else "") + "↩️ Use default template", f"tps:{k}:inherit")])
+        rows.append([b(("✅ " if not own else "") + "↩️ Use default template", f"tps:{k}:inherit:{page}")])
     rows.append([b("👁 Preview", f"pv:{k}"), b("⬅ Back", f"ch:{k}")])
     text = (f"🎨 <b>Template</b> — {scope_name(k)}\n\nNow: <b>{templates.name(e['template_key'])}</b>"
-            f"{'' if own else '  <i>(from default)</i>'}\n\nPick a design. Links used in the design come from 🔗 Links.")
+            f"{'' if own else '  <i>(from default)</i>'}\n\nPick a design, then tap 👁 Preview to see it. "
+            "Links used in the design come from 🔗 Links; a line whose link is not set is skipped.")
     return text, rows
 
 
@@ -219,16 +244,26 @@ def buttons_screen(scope) -> tuple[str, list]:
     lines = "\n".join(f"{i}. <b>{esc(x['text'])}</b> → {esc(_host(x['url']))}" for i, x in enumerate(btns, 1)) \
         or "<i>No buttons yet. Tap ➕ Add button.</i>"
     text = (f"🔘 <b>Buttons</b> — {scope_name(k)}\n{len(btns)}/{MAX_BUTTONS} · auto: <b>{_on(c['buttons_on'])}</b>\n\n{lines}\n\n"
-            "These link buttons appear under every new post. Use ▶️ <b>Run on old posts</b> to add them to old posts.")
+            "These link buttons appear under every new post. Use ▶️ <b>Run on old posts</b> to add them to old posts.\n\n"
+            "<b>Look:</b> layout (1/2/3 per row, ✨ Smart = first button wide) · colour · text font (Aa 𝗔𝗮 ꜱᴍ 𝙼𝚘)."
+            + ("" if _colors_ok() else "\n⚠️ Colours need a newer <code>kurigram</code> — layout and fonts work anyway."))
     rows = [[b(f"{i}. {trunc(x['text'], 28)}", f"bti:{k}:{i - 1}")] for i, x in enumerate(btns, 1)]
     rows.append([b("➕ Add button", f"bta:{k}"), b("📋 Add many", f"btm:{k}")])
-    rows.append([b(("✅ " if c["per_row"] == 1 else "") + "▫️ 1 per row", f"btr:{k}:1"),
-                 b(("✅ " if c["per_row"] == 2 else "") + "▫️▫️ 2 per row", f"btr:{k}:2")])
+    lay = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 0: "✨ Smart"}
+    rows.append([b(("✅ " if c["per_row"] == n else "") + t, f"btr:{k}:{n}") for n, t in lay.items()])
+    cols = [b(("✅ " if c.get("color", "auto") == m else "") + t, f"btcol:{k}:{m}") for m, t in COLOR_MODES.items()]
+    rows += [cols[:3], cols[3:]]
+    rows.append([b(("✅ " if c.get("font", "normal") == f else "") + t, f"btf:{k}:{f}") for f, t in FONTS.items()])
     rows.append([b(f"🔘 Auto buttons: {_on(c['buttons_on'])}", f"tg:{k}:btnb")])
     if btns:
         rows.append([b("🧹 Clear all", f"btc:{k}"), b("👁 Preview", f"pv:{k}")])
     rows.append([b("⬅ Back", f"ch:{k}")])
     return text, rows
+
+
+def _colors_ok() -> bool:
+    from utils import tg
+    return tg.colors_supported()
 
 
 def button_screen(scope, idx: int) -> tuple[str, list]:

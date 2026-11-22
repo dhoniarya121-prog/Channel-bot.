@@ -323,14 +323,38 @@ def fallback_title(file_name: str | None) -> str:
     return "New File"
 
 
+_WRAP = r"(?:<(?:b|i|u|s|em|strong|ins|del|strike|code|blockquote|tg-spoiler)>)+"
+
+
+def _wrapper_tags(template: str) -> list[str]:
+    """Tags a template puts right around {original_caption}, outermost first (e.g. ['blockquote', 'b'])."""
+    pre = template.split("{original_caption}")[0]
+    m = re.search("(" + _WRAP + r")\s*$", pre)
+    return re.findall(r"<([a-z-]+)>", m.group(1)) if m else []
+
+
+def _unwrap(cleaned: str, tags: list[str]) -> str:
+    """Remove those wrapper tags from an already-edited caption so they are not added twice."""
+    if not tags:
+        return cleaned
+    s = cleaned.strip()
+    opening = "".join(f"<{t}>" for t in tags)
+    closing = "".join(f"</{t}>" for t in reversed(tags))
+    if s.startswith(opening) and s.endswith(closing) and len(s) > len(opening) + len(closing):
+        return s[len(opening):-len(closing)]
+    return cleaned
+
+
 def _strip_prefix(cleaned: str, template: str, links: dict | None = None) -> str:
     prefix = template.split("{original_caption}")[0]
+    prefix = re.sub(_WRAP + r"\s*$", "", prefix)           # tags wrapped around the caption are handled by _unwrap
     if "{" in prefix and links:
         prefix = render(prefix, "", links)          # e.g. "[ @name ]" prefix built from a link placeholder
     if "{" in prefix:
         return cleaned
     s = cleaned.lstrip()
-    for cand in (prefix.strip(), strip_tags(prefix).strip()):
+    last = prefix.rsplit("\n", 1)[-1]                     # earlier header lines are already removed by _drop_footer
+    for cand in (prefix.strip(), strip_tags(prefix).strip(), last.strip(), strip_tags(last).strip()):
         if cand and s.startswith(cand):
             return s[len(cand):].lstrip(" ")
     return cleaned
@@ -351,7 +375,8 @@ def build_caption(original_html: str | None, template: str, links: dict, old_lin
                   file_name: str | None = None, limit: int = CAPTION_LIMIT) -> str:
     known = [v for v in links.values() if v] + list(old_links or [])
     footer = {strip_tags(ln).strip() for ln in render(template, "", links).split("\n")} - {""}
-    cleaned = _strip_prefix(_drop_footer(original_html or "", footer), template, links)
+    cleaned = _unwrap(_strip_prefix(_drop_footer(original_html or "", footer), template, links),
+                      _wrapper_tags(template))
     cleaned = remove_known_links(cleaned, known)
     if not strip_tags(cleaned).strip():
         cleaned = html.escape(fallback_title(file_name))
