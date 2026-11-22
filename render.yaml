@@ -18,6 +18,10 @@ services:
         value: 3.11.9
       - key: DATA_FILE
         value: /var/data/settings.json
+      - key: PUBLIC_MODE
+        value: "true"
+      - key: MAX_CHANNELS_PER_USER
+        value: "10"
       - {key: API_ID, sync: false}
       - {key: API_HASH, sync: false}
       - {key: BOT_TOKEN, sync: false}
